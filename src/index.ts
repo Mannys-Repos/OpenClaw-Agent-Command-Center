@@ -3,6 +3,7 @@ import { readFileSync, existsSync } from "node:fs";
 import { buildDashboardHTML, getDashboardCSSContent } from "./dashboard.js";
 import { handleApiRequest } from "./api.js";
 import { resolveAsset } from "./resolve-asset.js";
+import { isSetupRequired, isAuthenticated, handleSetup, handleLogin, handleLogout, serveLoginPage } from "./auth.js";
 
 // Pre-load icon PNGs
 let IOS_ICON: Buffer;
@@ -19,9 +20,28 @@ export default function register(api: any) {
     const port = config.port ?? 19900;
     const title = config.title ?? "OpenClaw Command Center";
 
-    // Respect gateway bind setting for the dashboard too
-    const gwBind = api.config?.gateway?.bind ?? "loopback";
-    const bindAddr = config.bind ?? (gwBind === "loopback" ? "0.0.0.0" : gwBind === "lan" ? "0.0.0.0" : "0.0.0.0");
+    // Bind address — defaults to 0.0.0.0 so the dashboard is reachable remotely.
+    // Override with config.bind if you want to restrict (e.g. "127.0.0.1").
+    const bindAddr: string = config.bind ?? "0.0.0.0";
+
+    // Allowed origins for CORS and API access control.
+    // By default: localhost + the server's own addresses. Extra origins can be
+    // added via config.allowedOrigins (array of strings).
+    const extraOrigins: string[] = config.allowedOrigins ?? [];
+    const allowedOriginSet = new Set([
+        `http://localhost:${port}`,
+        `http://127.0.0.1:${port}`,
+        ...extraOrigins,
+    ]);
+    // If binding to a specific non-loopback address, allow that too
+    if (bindAddr !== "127.0.0.1" && bindAddr !== "0.0.0.0") {
+        allowedOriginSet.add(`http://${bindAddr}:${port}`);
+    }
+
+    function isOriginAllowed(origin: string | undefined): boolean {
+        if (!origin) return true; // same-origin requests (no Origin header)
+        return allowedOriginSet.has(origin);
+    }
 
     // Register as a background service — runs its own HTTP server
     api.registerService({
@@ -29,18 +49,82 @@ export default function register(api: any) {
         start: () => {
             try {
                 const server = createServer(async (req, res) => {
-                    // CORS headers for flexibility
-                    res.setHeader("Access-Control-Allow-Origin", "*");
-                    res.setHeader("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS");
-                    res.setHeader("Access-Control-Allow-Headers", "Content-Type, Authorization");
+                    const origin = req.headers.origin;
+
+                    // CORS — only allow configured origins
+                    if (origin && isOriginAllowed(origin)) {
+                        res.setHeader("Access-Control-Allow-Origin", origin);
+                        res.setHeader("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS");
+                        res.setHeader("Access-Control-Allow-Headers", "Content-Type, Authorization");
+                        res.setHeader("Vary", "Origin");
+                    }
 
                     if (req.method === "OPTIONS") {
+                        if (!origin || !isOriginAllowed(origin)) {
+                            res.statusCode = 403;
+                            res.end();
+                            return;
+                        }
                         res.statusCode = 204;
                         res.end();
                         return;
                     }
 
                     const url = new URL(req.url ?? "/", `http://localhost:${port}`);
+
+                    // Block cross-origin API requests from disallowed origins
+                    if (url.pathname.startsWith("/api/") && origin && !isOriginAllowed(origin)) {
+                        res.statusCode = 403;
+                        res.setHeader("Content-Type", "application/json");
+                        res.end(JSON.stringify({ error: "Origin not allowed" }));
+                        return;
+                    }
+
+                    // ── Auth routes (always accessible) ──
+                    if (url.pathname === "/auth/setup" && req.method === "POST") {
+                        handleSetup(req, res);
+                        return;
+                    }
+                    if (url.pathname === "/auth/login" && req.method === "POST") {
+                        handleLogin(req, res);
+                        return;
+                    }
+                    if (url.pathname === "/auth/logout" && req.method === "POST") {
+                        handleLogout(req, res);
+                        return;
+                    }
+
+                    // ── Auth gate — everything below requires authentication ──
+                    // Allow favicon/icons through without auth (browsers request these automatically)
+                    const isPublicAsset = url.pathname === "/favicon.ico" || url.pathname === "/favicon.png"
+                        || url.pathname === "/manifest.json" || url.pathname === "/ios-icon.png"
+                        || url.pathname === "/apple-touch-icon.png" || url.pathname === "/apple-touch-icon-precomposed.png";
+
+                    if (!isPublicAsset) {
+                        const needsSetup = isSetupRequired();
+                        if (needsSetup) {
+                            // No credentials file — show setup page for HTML requests, 401 for API
+                            if (url.pathname.startsWith("/api/")) {
+                                res.statusCode = 401;
+                                res.setHeader("Content-Type", "application/json");
+                                res.end(JSON.stringify({ error: "Setup required — open the dashboard in a browser to create credentials" }));
+                                return;
+                            }
+                            serveLoginPage(res, title, true);
+                            return;
+                        }
+                        if (!isAuthenticated(req)) {
+                            // Not logged in — show login page for HTML requests, 401 for API
+                            if (url.pathname.startsWith("/api/")) {
+                                res.statusCode = 401;
+                                res.setHeader("Content-Type", "application/json");
+                                res.end(JSON.stringify({ error: "Authentication required — provide a Bearer token or log in via the dashboard" }));
+                                return;
+                            }
+                            serveLoginPage(res, title, false);
+                            return;
+                        }
+                    }
 
                     // Serve dashboard HTML at root
                     if (url.pathname === "/" || url.pathname === "") {

@@ -740,7 +740,7 @@ function agentIcon(a){return a.icon||"🤖"}
 function drawRelMap(){
   var canvas=Q("map-canvas");if(!canvas)return;
   var agents=D.agents||[],edges=buildRelGraph(),chNodes=buildChannelNodes();
-  var W=canvas.offsetWidth||window.innerWidth;
+  var W=Math.min(canvas.offsetWidth||window.innerWidth,window.innerWidth);
   var H=canvas.offsetHeight||400;
 
   // ── Layout constants — scale spacing based on agent count ──

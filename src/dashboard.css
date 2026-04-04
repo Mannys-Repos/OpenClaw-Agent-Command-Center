@@ -25,10 +25,10 @@
   --sab: 0px;
   /* Font scale — clamp(min, preferred, max) */
   --fs-xs: clamp(11px, 1.6vw, 12px);
-  --fs-sm: clamp(12px, 1.8vw, 13px);
-  --fs-base: clamp(13px, 2vw, 15px);
-  --fs-md: clamp(14px, 2.2vw, 16px);
-  --fs-lg: clamp(16px, 2.5vw, 18px);
+  --fs-sm: clamp(13px, 1.8vw, 14px);
+  --fs-base: clamp(14px, 2vw, 15px);
+  --fs-md: clamp(15px, 2.2vw, 16px);
+  --fs-lg: clamp(17px, 2.5vw, 19px);
   --fs-xl: clamp(18px, 3vw, 22px);
   --fs-2xl: clamp(20px, 3.5vw, 26px);
   --fs-mono: clamp(12px, 1.8vw, 14px);
@@ -766,7 +766,7 @@ label.lbl {
 
 .btn-sm {
   padding: 6px 14px;
-  font-size: var(--fs-sm)
+  font-size: var(--fs-base)
 }
 
 /* Forms */
