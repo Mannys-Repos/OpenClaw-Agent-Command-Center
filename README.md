@@ -11,22 +11,22 @@ A standalone dashboard plugin for [OpenClaw](https://github.com/openclaw) — fu
 visibility and control over your agents, sessions, provider keys, channels, tasks,
 and configuration from a single browser tab.
 
-![Main dashboard](docs/screenshot-main.png)
+![Main dashboard](docs/images/screenshot-main.png)
 
 <table>
 <tr>
-<td><img src="docs/screenshot-agent-drawer.png" alt="Agent drawer" /></td>
-<td><img src="docs/screenshot-models.png" alt="Models & API" /></td>
+<td><img src="docs/images/screenshot-agent-drawer.png" alt="Agent drawer" /></td>
+<td><img src="docs/images/screenshot-models.png" alt="Models & API" /></td>
 </tr>
 <tr>
-<td><img src="docs/screenshot-channels.png" alt="Channels" /></td>
-<td><img src="docs/screenshot-tasks.png" alt="Tasks" /></td>
+<td><img src="docs/images/screenshot-channels.png" alt="Channels" /></td>
+<td><img src="docs/images/screenshot-tasks.png" alt="Tasks" /></td>
 </tr>
 </table>
 
 <details>
 <summary>Mobile view</summary>
-<img src="docs/screenshot-mobile.png" alt="Mobile" width="300" />
+<img src="docs/images/screenshot-mobile.png" alt="Mobile" width="300" />
 </details>
 
 ---
@@ -45,52 +45,7 @@ and configuration from a single browser tab.
 - PWA support — add to home screen on iOS/Android
 - Fully responsive
 
----
-
-## Architecture
-
-```mermaid
-graph TD
-    subgraph Browser["Browser (SPA)"]
-        Graph[Agent Graph]
-        Chat[Session Chat]
-        Models[Models & API Keys]
-        Tasks[Tasks View]
-        Logs[Logs Tail]
-    end
-
-    Browser -- "fetch /api/*" --> Server
-
-    subgraph Server["Dashboard HTTP Server · :19900 · index.ts"]
-        Assets[Static Assets<br/>CSS, PNG, PWA]
-        HTML[HTML Builder<br/>dashboard.ts]
-        API[API Router<br/>api.ts]
-    end
-
-    API --> Gateway["OpenClaw Gateway<br/>:18789"]
-    API --> Providers["Provider APIs<br/>Anthropic · OpenAI · Google<br/>Groq · Mistral · OpenRouter"]
-    API --> Disk["Disk I/O<br/>~/.openclaw/"]
-```
-
-## Source Layout
-
-```
-src/
-├── index.ts              Entry point — HTTP server, static assets, plugin registration
-├── api.ts                All /api/* route handlers
-├── auth.ts               Authentication — credentials, sessions, login/setup pages
-├── dashboard.ts          HTML builder — assembles the SPA shell
-├── dashboard.js.txt      Client-side JS (vanilla, no framework) — inlined into HTML
-├── dashboard.css         Styles — dark theme, responsive
-├── resolve-asset.ts      Asset path resolver
-├── index.test.ts         Vitest unit tests
-├── favicon.png           Browser tab icon
-├── logo.png              Header logo
-└── ios_icon.png          PWA / iOS home screen icon
-```
-
-The dashboard exposes its own REST API under `/api/*` for scripting and integration.
-See [API_REFERENCE.md](API_REFERENCE.md) for the full endpoint list.
+📐 [Architecture & how it works](docs/ARCHITECTURE.md) · 📡 [API Reference](docs/API_REFERENCE.md)
 
 ---
 
