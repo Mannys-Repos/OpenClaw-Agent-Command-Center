@@ -3202,8 +3202,9 @@ html {
 .cfg-layout {
   display: flex;
   gap: 0;
-  max-width: 1200px;
-  min-height: calc(100vh - 180px)
+  max-width: 1600px;
+  min-height: calc(100vh - 180px);
+  overflow: hidden
 }
 
 .cfg-toolbar {
@@ -3305,12 +3306,13 @@ html {
 }
 
 .cfg-docs-panel {
-  width: 300px;
-  flex-shrink: 0;
+  width: 420px;
+  min-width: 320px;
+  flex-shrink: 1;
   margin-left: 16px;
-  position: sticky;
-  top: 0;
-  align-self: flex-start
+  align-self: stretch;
+  overflow-y: auto;
+  overflow-x: hidden
 }
 
 .cfg-docs-box {
@@ -3318,7 +3320,8 @@ html {
   border: 1px solid var(--border);
   border-radius: var(--radius);
   padding: 16px;
-  min-height: 200px
+  min-height: 100%;
+  box-sizing: border-box
 }
 
 .cfg-docs-label {
@@ -3333,7 +3336,9 @@ html {
   font-size: var(--fs-base);
   color: var(--tx2);
   line-height: 1.7;
-  white-space: pre-wrap
+  white-space: pre-wrap;
+  word-break: break-word;
+  overflow-wrap: break-word
 }
 
 /* Channel settings modal */

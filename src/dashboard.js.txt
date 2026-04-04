@@ -186,12 +186,7 @@ function getModelAliasMap(){
   var m=D.config&&D.config.agents&&D.config.agents.defaults&&D.config.agents.defaults.models;
   if(!m)return{};
   var out={};
-  Object.keys(m).forEach(function(k){
-    if(m[k].alias){
-      var realKey=m[k].ref||k;
-      out[m[k].alias]=realKey;
-    }
-  });
+  Object.keys(m).forEach(function(k){if(m[k].alias)out[m[k].alias]=k});
   return out;
 }
 // Tooltip helper: renders a label with an info icon
@@ -3455,7 +3450,6 @@ function removeModelRow(i){
 function saveModels(){
   var oldAliasMap=getModelAliasMap();
   var models={};
-  var modelsByAlias={};
   var rows=document.querySelectorAll(".model-row");
   rows.forEach(function(row){
     var id=row.id.replace("mrow-","");
@@ -3471,37 +3465,18 @@ function saveModels(){
     if(!mod&&modCustom)mod=modCustom.value.trim();
     if(!alias||!prov||!mod)return;
     // Use alias as key to allow multiple aliases for the same provider/model
-    modelsByAlias[alias]={provModel:prov+"/"+mod};
-  });
-
-  // Build config models object keyed by provider/model
-  // When multiple aliases share a model, use alias-suffixed keys for extras
-  var seen={};
-  Object.keys(modelsByAlias).forEach(function(alias){
-    var pm=modelsByAlias[alias].provModel;
-    if(!seen[pm]){
-      models[pm]={alias:alias};
-      seen[pm]=true;
-    }else{
-      // Duplicate provider/model — use alias-tagged key
-      models[pm+"#"+alias]={alias:alias,ref:pm};
-    }
+    // Note: config keys are provider/model, so last alias wins if duplicated
+    models[prov+"/"+mod]={alias:alias};
   });
 
   // Build new alias map: new alias -> "provider/modelId"
   var newAliasMap={};
-  Object.keys(models).forEach(function(k){
-    if(models[k].alias){
-      var realKey=models[k].ref||k;
-      newAliasMap[models[k].alias]=realKey;
-    }
-  });
+  Object.keys(models).forEach(function(k){if(models[k].alias)newAliasMap[models[k].alias]=k});
 
   // Detect renames: old alias -> new alias (same provider/model key)
   var renames={}; // oldAlias -> newAlias
   Object.keys(oldAliasMap).forEach(function(oldAlias){
     var provModel=oldAliasMap[oldAlias];
-    // If old alias no longer exists in new map, check if the same provider/model has a new primary alias
     if(!newAliasMap[oldAlias]&&models[provModel]&&models[provModel].alias!==oldAlias){
       renames[oldAlias]=models[provModel].alias;
     }
@@ -3665,7 +3640,11 @@ function _showRawConfigUI(config){
       {key:"defaults.heartbeat",type:"object",req:false,desc:"Periodic heartbeat: { every, model, session, target, prompt }."},
       {key:"defaults.compaction",type:"object",req:false,desc:"Context compaction: { mode: 'default' | 'safeguard', memoryFlush }."},
       {key:"defaults.sandbox",type:"object",req:false,desc:"Docker sandboxing: { mode: 'off' | 'non-main' | 'all', scope, workspaceAccess }."},
-      {key:"defaults.subagents",type:"object",req:false,desc:"Sub-agent config: { model, maxConcurrent, archiveAfterMinutes }."},
+      {key:"defaults.subagents",type:"object",req:false,desc:"Sub-agent config: { model, maxConcurrent, maxSpawnDepth, maxChildrenPerAgent, archiveAfterMinutes }."},
+      {key:"defaults.subagents.maxSpawnDepth",type:"number",req:false,desc:"Max nesting depth for sub-agent spawning. 1 = no nesting (default). 2 = orchestrator pattern (main → orchestrator → workers). Range: 1–5."},
+      {key:"defaults.subagents.maxChildrenPerAgent",type:"number",req:false,desc:"Max active children per agent session. Default: 5. Range: 1–20."},
+      {key:"defaults.subagents.maxConcurrent",type:"number",req:false,desc:"Global sub-agent concurrency lane cap. Default: 8."},
+      {key:"defaults.subagents.runTimeoutSeconds",type:"number",req:false,desc:"Default timeout for sessions_spawn when omitted. 0 = no timeout."},
       {key:"defaults.skipBootstrap",type:"boolean",req:false,desc:"Disable auto-creation of workspace bootstrap files."},
       {key:"list",type:"array",req:false,desc:"Agent definitions array."},
       {key:"list[].id",type:"string",req:true,desc:"Stable agent identifier (required)."},
