@@ -5576,11 +5576,21 @@ function _startSessionPoll(){
     _sessionPollBusy=true;
     api("overview",{_quiet:true}).then(function(d){
       _sessionPollBusy=false;
-      var oldKeys=(D.sessions||[]).map(function(s){return s.sessionKey||s.id}).sort().join(",");
-      D.sessions=d.sessions||[];
+      var oldFingerprint=(D.sessions||[]).map(function(s){return(s.sessionKey||s.id)+":"+s.messageCount}).sort().join("|");
+      // Merge: keep existing sessions, add new ones, update counts for existing
+      var newSessions=d.sessions||[];
+      var newMap={};
+      newSessions.forEach(function(s){newMap[s.sessionKey||s.id]=s});
+      var oldMap={};
+      (D.sessions||[]).forEach(function(s){oldMap[s.sessionKey||s.id]=s});
+      // Merge: new sessions override old, but don't drop sessions that the CLI missed this cycle
+      var merged={};
+      Object.keys(oldMap).forEach(function(k){merged[k]=oldMap[k]});
+      Object.keys(newMap).forEach(function(k){merged[k]=newMap[k]});
+      D.sessions=Object.values(merged);
       D.agents=d.agents||D.agents;
       D.bindings=d.bindings||D.bindings;
-      var newKeys=(D.sessions||[]).map(function(s){return s.sessionKey||s.id}).sort().join(",");
+      var newFingerprint=D.sessions.map(function(s){return(s.sessionKey||s.id)+":"+s.messageCount}).sort().join("|");
 
       var newFp=_computeGraphFingerprint(D.agents,D.bindings);
       if(newFp!==_graphFingerprint){
@@ -5590,7 +5600,7 @@ function _startSessionPoll(){
         renderAgentList();
       }
 
-      if(sessionsVisible&&oldKeys!==newKeys){
+      if(sessionsVisible&&oldFingerprint!==newFingerprint){
         var db=Q("drawer-body");
         if(db&&drawerAgent)db.innerHTML=renderSessions(drawerAgent);
       }
@@ -5599,7 +5609,7 @@ function _startSessionPoll(){
     if(_chatSessionKey){
       _refreshChatMessages(_chatSessionKey);
     }
-  },15000);
+  },5000);
 }
 _startSessionPoll();
 

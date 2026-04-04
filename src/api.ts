@@ -1489,13 +1489,44 @@ export async function handleApiRequest(req: IncomingMessage, res: ServerResponse
             execAsync("openclaw status --json", { timeout: 8000 }).then((out) => {
                 try { return JSON.parse((out || "{}").trim()); } catch { return {}; }
             }),
-            execAsync("openclaw sessions list --json", { timeout: 8000 }).then((out) => {
-                try { const p = JSON.parse((out || "[]").trim()); return Array.isArray(p) ? p : []; } catch { return []; }
+            execAsync("openclaw sessions --all-agents --json", { timeout: 10000 }).then((out) => {
+                try {
+                    const p = JSON.parse((out || "{}").trim());
+                    return (p.sessions || []).map((s: any) => {
+                        let messageCount = 0;
+                        const sid = s.sessionId;
+                        const agentId = s.agentId || "";
+                        if (sid && agentId) {
+                            const jsonlPath = join(AGENTS_STATE_DIR, agentId, "sessions", sid + ".jsonl");
+                            if (existsSync(jsonlPath)) {
+                                try {
+                                    const content = readFileSync(jsonlPath, "utf-8");
+                                    for (const line of content.split("\n")) {
+                                        if (!line.trim()) continue;
+                                        try { const e = JSON.parse(line); if (e.type === "message" && e.message) messageCount++; } catch { }
+                                    }
+                                } catch { }
+                            }
+                        }
+                        return {
+                            sessionKey: sid || s.key,
+                            agentId,
+                            channel: s.kind || "",
+                            messageCount,
+                            updatedAt: s.updatedAt ? new Date(s.updatedAt).toISOString() : null,
+                            createdAt: s.updatedAt ? new Date(s.updatedAt - (s.ageMs || 0)).toISOString() : null,
+                            model: s.model || null,
+                            inputTokens: s.inputTokens || 0,
+                            outputTokens: s.outputTokens || 0,
+                            gatewayKey: s.key || null,
+                        };
+                    });
+                } catch { return []; }
             }),
         ]);
 
-        // Merge disk sessions using shared helper
-        const sessions = scanAllSessions(Array.isArray(cliSessions) ? cliSessions : []);
+        // Use CLI sessions directly (already enriched with message counts)
+        const sessions = Array.isArray(cliSessions) ? cliSessions : [];
 
         return json(res, 200, {
             agents: enriched,
