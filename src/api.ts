@@ -1766,8 +1766,8 @@ export async function handleApiRequest(req: IncomingMessage, res: ServerResponse
                             for (const [key, val] of Object.entries(idx)) {
                                 const sid = (val as any).sessionId;
                                 if (!sid) continue;
-                                // Match by: exact session key, or key contains our sessionKey, or it's the main session for this agent
-                                if (key.includes(sessionKey) || sessionKey.includes(sid) || key.includes(":main")) {
+                                // Match by exact session key or exact session ID only
+                                if (key === sessionKey || sid === sessionKey) {
                                     const jsonlPath = join(sessDir, sid + ".jsonl");
                                     if (existsSync(jsonlPath)) {
                                         const parsed = parseSessionJsonl(jsonlPath);
