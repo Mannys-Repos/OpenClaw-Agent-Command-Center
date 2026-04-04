@@ -8,9 +8,35 @@ import type { IncomingMessage, ServerResponse } from "node:http";
 const DASHBOARD_DIR = join(homedir(), ".openclaw", "extensions", "openclaw-agent-dashboard");
 const CREDENTIALS_PATH = join(DASHBOARD_DIR, ".credentials");
 
-// In-memory session store: token -> expiry timestamp
-const sessions = new Map<string, number>();
+// Session store: persisted to disk so sessions survive gateway restarts
+const SESSIONS_PATH = join(DASHBOARD_DIR, ".sessions");
 const SESSION_TTL_MS = 24 * 60 * 60 * 1000; // 24 hours
+
+function _loadSessions(): Map<string, number> {
+    try {
+        if (existsSync(SESSIONS_PATH)) {
+            const raw = JSON.parse(readFileSync(SESSIONS_PATH, "utf-8"));
+            const now = Date.now();
+            const map = new Map<string, number>();
+            for (const [token, expiry] of Object.entries(raw)) {
+                if (typeof expiry === "number" && expiry > now) map.set(token, expiry);
+            }
+            return map;
+        }
+    } catch { }
+    return new Map();
+}
+
+function _saveSessions(): void {
+    try {
+        if (!existsSync(DASHBOARD_DIR)) mkdirSync(DASHBOARD_DIR, { recursive: true });
+        const obj: Record<string, number> = {};
+        sessions.forEach((expiry, token) => { obj[token] = expiry; });
+        writeFileSync(SESSIONS_PATH, JSON.stringify(obj), "utf-8");
+    } catch { }
+}
+
+const sessions = _loadSessions();
 
 // ─── Credential helpers ───
 
@@ -56,6 +82,7 @@ function writeCredentials(username: string, password: string): void {
 function createSession(): string {
     const token = randomBytes(32).toString("hex");
     sessions.set(token, Date.now() + SESSION_TTL_MS);
+    _saveSessions();
     return token;
 }
 
@@ -64,6 +91,7 @@ function isValidSession(token: string): boolean {
     if (!expiry) return false;
     if (Date.now() > expiry) {
         sessions.delete(token);
+        _saveSessions();
         return false;
     }
     return true;
@@ -71,6 +99,7 @@ function isValidSession(token: string): boolean {
 
 function destroySession(token: string): void {
     sessions.delete(token);
+    _saveSessions();
 }
 
 function getTokenFromRequest(req: IncomingMessage): string | null {

@@ -1262,11 +1262,15 @@ function scanAllSessions(initialSessions: any[] = []): any[] {
         } catch { }
     }
 
-    // Merge dashboard session store
+    // Merge dashboard session store — but skip entries where the agent already has a gateway session
     const dashSess = listDashboardSessions();
     const seenFinal = new Set(sessions.map((s: any) => s.sessionKey || s.id));
+    const seenAgents = new Set(sessions.map((s: any) => s.agentId).filter(Boolean));
     for (const ds of dashSess) {
-        if (!seenFinal.has(ds.sessionKey)) sessions.push(ds);
+        if (seenFinal.has(ds.sessionKey)) continue;
+        // If the agent already has a gateway session, skip the dashboard metadata entry
+        if (ds.agentId && seenAgents.has(ds.agentId)) continue;
+        sessions.push(ds);
     }
 
     return sessions;
@@ -1667,7 +1671,49 @@ export async function handleApiRequest(req: IncomingMessage, res: ServerResponse
         try {
             // GET /sessions — list all sessions
             if (method === "GET" && sub.length === 0) {
-                const sessions = scanAllSessions();
+                // Primary: use OpenClaw CLI for authoritative session list
+                let sessions: any[] = [];
+                try {
+                    const cliPath = join(resolveHome("~"), ".npm-global", "bin", "openclaw");
+                    const r = await execAsync(`${cliPath} sessions --all-agents --json`, { timeout: 10000 });
+                    const parsed = JSON.parse((r || "{}").trim());
+                    sessions = (parsed.sessions || []).map((s: any) => {
+                        // Get real message count from JSONL
+                        let messageCount = 0;
+                        const sid = s.sessionId;
+                        const agentId = s.agentId || "";
+                        if (sid && agentId) {
+                            const jsonlPath = join(AGENTS_STATE_DIR, agentId, "sessions", sid + ".jsonl");
+                            if (existsSync(jsonlPath)) {
+                                try {
+                                    const content = readFileSync(jsonlPath, "utf-8");
+                                    for (const line of content.split("\n")) {
+                                        if (!line.trim()) continue;
+                                        try {
+                                            const entry = JSON.parse(line);
+                                            if (entry.type === "message" && entry.message) messageCount++;
+                                        } catch { }
+                                    }
+                                } catch { }
+                            }
+                        }
+                        return {
+                            sessionKey: sid || s.key,
+                            agentId,
+                            channel: s.kind || "",
+                            messageCount,
+                            updatedAt: s.updatedAt ? new Date(s.updatedAt).toISOString() : null,
+                            createdAt: s.updatedAt ? new Date(s.updatedAt - (s.ageMs || 0)).toISOString() : null,
+                            model: s.model || null,
+                            inputTokens: s.inputTokens || 0,
+                            outputTokens: s.outputTokens || 0,
+                            gatewayKey: s.key || null,
+                        };
+                    });
+                } catch {
+                    // Fallback: scan disk
+                    sessions = scanAllSessions();
+                }
                 return json(res, 200, { sessions });
             }
             const sessionKey = sub[0];
@@ -1675,57 +1721,74 @@ export async function handleApiRequest(req: IncomingMessage, res: ServerResponse
 
             // GET /sessions/{key} — get single session with messages
             if (method === "GET" && sessionKey && !action) {
-                // 1. Check dashboard session store first (most likely for dashboard-created sessions)
-                let session: any = readDashboardSession(sessionKey);
-                // 2. Try CLI (async)
+                let session: any = null;
+
+                // Helper: find JSONL for an agent by scanning its sessions dir
+                function findAgentJsonl(agentId: string): any | null {
+                    const sessDir = join(AGENTS_STATE_DIR, agentId, "sessions");
+                    if (!existsSync(sessDir)) return null;
+                    // Check sessions.json index first
+                    const indexFile = join(sessDir, "sessions.json");
+                    if (existsSync(indexFile)) {
+                        try {
+                            const idx = JSON.parse(readFileSync(indexFile, "utf-8"));
+                            for (const [key, val] of Object.entries(idx)) {
+                                const sid = (val as any).sessionId;
+                                if (!sid) continue;
+                                // Match by: exact session key, or key contains our sessionKey, or it's the main session for this agent
+                                if (key.includes(sessionKey) || sessionKey.includes(sid) || key.includes(":main")) {
+                                    const jsonlPath = join(sessDir, sid + ".jsonl");
+                                    if (existsSync(jsonlPath)) {
+                                        const parsed = parseSessionJsonl(jsonlPath);
+                                        return { sessionKey, agentId: parsed.agentId || agentId, channel: parsed.channel, messages: parsed.messages, updatedAt: parsed.updatedAt };
+                                    }
+                                }
+                            }
+                        } catch { }
+                    }
+                    // Fallback: direct file match
+                    for (const f of readdirSync(sessDir)) {
+                        if (f === "sessions.json") continue;
+                        const base = f.replace(/\.jsonl?$/, "");
+                        if (base === sessionKey && f.endsWith(".jsonl")) {
+                            const parsed = parseSessionJsonl(join(sessDir, f));
+                            return { sessionKey, agentId: parsed.agentId || agentId, channel: parsed.channel, messages: parsed.messages, updatedAt: parsed.updatedAt };
+                        }
+                    }
+                    return null;
+                }
+
+                // 1. Extract agent ID from session key (format: agentId-timestamp or UUID)
+                const dashSession = readDashboardSession(sessionKey);
+                const agentIdFromKey = dashSession?.agentId || sessionKey.replace(/-\d+$/, "");
+
+                // 2. Try to find JSONL for this specific agent first (fast path)
+                if (agentIdFromKey && existsSync(join(AGENTS_STATE_DIR, agentIdFromKey))) {
+                    session = findAgentJsonl(agentIdFromKey);
+                }
+
+                // 3. If not found, try CLI
                 if (!session) {
                     try {
                         const r = await execAsync(`openclaw sessions get "${sessionKey}" --json`, { timeout: 8000 });
                         try { const p = JSON.parse((r || "{}").trim()); if (p && (p.messages || p.conversation || p.sessionKey)) session = p; } catch { }
                     } catch { }
                 }
-                // 3. Scan agent state dirs
+
+                // 4. If still not found, scan all agents
                 if (!session && existsSync(AGENTS_STATE_DIR)) {
-                    outer: for (const agentId of readdirSync(AGENTS_STATE_DIR)) {
-                        const sessDir = join(AGENTS_STATE_DIR, agentId, "sessions");
-                        if (!existsSync(sessDir)) continue;
-                        const indexFile = join(sessDir, "sessions.json");
-                        if (existsSync(indexFile)) {
-                            try {
-                                const idx = JSON.parse(readFileSync(indexFile, "utf-8"));
-                                for (const [key, val] of Object.entries(idx)) {
-                                    if (key.includes(sessionKey) || sessionKey.includes(key)) {
-                                        const sid = (val as any).sessionId;
-                                        if (sid) {
-                                            const jsonlPath = join(sessDir, sid + ".jsonl");
-                                            const jsonPath = join(sessDir, sid + ".json");
-                                            if (existsSync(jsonlPath)) {
-                                                const parsed = parseSessionJsonl(jsonlPath);
-                                                session = { sessionKey, agentId: parsed.agentId || agentId, channel: parsed.channel, messages: parsed.messages, updatedAt: parsed.updatedAt };
-                                                break outer;
-                                            } else if (existsSync(jsonPath)) {
-                                                try { session = JSON.parse(readFileSync(jsonPath, "utf-8")); break outer; } catch { }
-                                            }
-                                        }
-                                    }
-                                }
-                            } catch { }
-                        }
-                        for (const f of readdirSync(sessDir)) {
-                            const base = f.replace(/\.jsonl?$/, "");
-                            if (base === sessionKey) {
-                                const fp = join(sessDir, f);
-                                if (f.endsWith(".jsonl")) {
-                                    const parsed = parseSessionJsonl(fp);
-                                    session = { sessionKey, agentId: parsed.agentId || agentId, channel: parsed.channel, messages: parsed.messages, updatedAt: parsed.updatedAt };
-                                } else if (f !== "sessions.json") {
-                                    try { session = JSON.parse(readFileSync(fp, "utf-8")); } catch { }
-                                }
-                                break outer;
-                            }
-                        }
+                    for (const agentId of readdirSync(AGENTS_STATE_DIR)) {
+                        if (agentId === agentIdFromKey) continue; // already tried
+                        session = findAgentJsonl(agentId);
+                        if (session) break;
                     }
                 }
+
+                // 5. Fall back to dashboard store if nothing else found
+                if (!session && dashSession) {
+                    session = dashSession;
+                }
+
                 return json(res, 200, { session: session || {} });
             }
 
@@ -1736,7 +1799,7 @@ export async function handleApiRequest(req: IncomingMessage, res: ServerResponse
                 const agentId = body.agentId || "";
                 const userMessage = body.message;
 
-                // Read or create session in dashboard store
+                // Ensure dashboard session metadata exists (no messages stored here)
                 let session = readDashboardSession(sessionKey);
                 if (!session) {
                     session = {
@@ -1748,12 +1811,10 @@ export async function handleApiRequest(req: IncomingMessage, res: ServerResponse
                         updatedAt: new Date().toISOString(),
                     };
                 }
-                // Add user message
-                session.messages.push({ role: "user", content: userMessage });
                 session.updatedAt = new Date().toISOString();
                 writeDashboardSession(session);
 
-                // Try to get agent response
+                // Send to gateway — the gateway's JSONL is the source of truth for messages
                 let responseText = "";
                 let responded = false;
 
@@ -1797,13 +1858,7 @@ export async function handleApiRequest(req: IncomingMessage, res: ServerResponse
                     }
                 }
 
-                // Store assistant response
-                if (responded && responseText) {
-                    session.messages.push({ role: "assistant", content: responseText });
-                    session.updatedAt = new Date().toISOString();
-                    writeDashboardSession(session);
-                }
-
+                // Response sent — messages are in the gateway's JSONL, not stored here
                 return json(res, 200, { ok: true, result: responseText, response: responseText });
             }
 
@@ -1829,7 +1884,7 @@ export async function handleApiRequest(req: IncomingMessage, res: ServerResponse
             if (method === "DELETE" && sessionKey) {
                 let deleted = false;
 
-                // Special: "all:{agentId}" deletes ALL sessions for an agent
+                // Special: "all:{agentId}" deletes ALL sessions for an agent AND its subagent children
                 if (sessionKey.startsWith("all:")) {
                     const agentId = sessionKey.slice(4);
                     // Clean dashboard sessions
@@ -1837,16 +1892,26 @@ export async function handleApiRequest(req: IncomingMessage, res: ServerResponse
                     dashSessions.forEach(s => {
                         if (s.agentId === agentId) { deleteDashboardSession(s.sessionKey); deleted = true; }
                     });
-                    // Clean agent session directory
-                    const sessDir = join(AGENTS_STATE_DIR, agentId, "sessions");
-                    if (existsSync(sessDir)) {
+                    // Find child agent IDs from config
+                    const config = readConfig();
+                    const agentCfg = (config.agents?.list || []).find((a: any) => a.id === agentId);
+                    const childAgentIds: string[] = agentCfg?.subagents?.allowAgents || [];
+                    const allAgentIds = [agentId, ...childAgentIds];
+                    // Clean session directories for this agent and all its children
+                    for (const aid of allAgentIds) {
+                        const sessDir = join(AGENTS_STATE_DIR, aid, "sessions");
+                        if (!existsSync(sessDir)) continue;
                         try {
                             for (const f of readdirSync(sessDir)) {
                                 try { unlinkSync(join(sessDir, f)); deleted = true; } catch { }
                             }
                         } catch { }
+                        // Also clean dashboard sessions for child agents
+                        dashSessions.forEach(s => {
+                            if (s.agentId === aid) { deleteDashboardSession(s.sessionKey); }
+                        });
                     }
-                    return json(res, 200, { ok: true, deleted, cleanedAll: true });
+                    return json(res, 200, { ok: true, deleted, cleanedAll: true, cleanedAgents: allAgentIds });
                 }
 
                 // 1. Delete from dashboard store

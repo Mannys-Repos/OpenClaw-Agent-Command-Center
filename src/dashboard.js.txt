@@ -1883,27 +1883,43 @@ function renderSessions(a){
     return '<div style="padding:20px;text-align:center;color:var(--tx3)"><span class="spin"></span> Loading sessions…</div>';
   }
 
-  // Filter sessions for this agent:
-  // 1. agentId matches exactly
-  // 2. session key contains the agent id (e.g. "main-1234567890")
-  // 3. session is stored under this agent's directory (agentDir contains agent id)
   var agentId=a.id;
-  var mine=all.filter(function(s){
+
+  // Build tree: find root sessions for this agent, then attach children
+  // Root: gatewayKey contains ":main" and agentId matches
+  // Child: gatewayKey contains ":subagent:" and agentId is a known subagent
+  var roots=[];
+  var children=[];
+  all.forEach(function(s){
+    var gk=s.gatewayKey||"";
     var sk=s.sessionKey||s.id||"";
-    if(sk==="sessions")return false;
-    // Exact agentId match
-    if(s.agentId===agentId)return true;
-    // Session key starts with agentId (common pattern: "agentId-timestamp")
-    if(sk.indexOf(agentId+"-")===0)return true;
-    // Session key contains agentId as a segment
-    if(sk.indexOf("/"+agentId+"/")>-1)return true;
-    return false;
+    if(sk==="sessions")return;
+    var isRoot=gk.indexOf(":main")>-1&&!gk.match(/:subagent:/);
+    var isChild=gk.indexOf(":subagent:")>-1;
+    if(s.agentId===agentId&&isRoot){
+      roots.push(s);
+    }else if(s.agentId===agentId&&!isRoot&&!isChild){
+      roots.push(s);
+    }else if(isChild){
+      children.push(s);
+    }
   });
-  var active=mine.filter(function(s){return(s.messageCount||0)>0});
+
+  // Also include root sessions that match by key pattern
+  all.forEach(function(s){
+    var sk=s.sessionKey||s.id||"";
+    if(sk.indexOf(agentId+"-")===0&&roots.indexOf(s)<0&&children.indexOf(s)<0){
+      roots.push(s);
+    }
+  });
+
+  var active=roots.length+children.filter(function(c){
+    // Count children that belong to this agent's roots
+    return true;
+  }).length;
 
   var h='';
 
-  // Model limit warning
   if(_modelLimitActive){
     var remaining="";
     if(_modelLimitExpiry){
@@ -1920,15 +1936,15 @@ function renderSessions(a){
   h+='<div class="mb-md">';
   h+='<div style="display:flex;justify-content:space-between;align-items:flex-start;gap:8px;flex-wrap:wrap">';
   h+='<div><div style="font-size:16px;font-weight:600">Sessions</div>';
-  if(active.length>0)h+='<div class="section-desc mt-sm">'+active.length+' active</div>';
+  if(roots.length>0)h+='<div class="section-desc mt-sm">'+roots.length+' session'+(roots.length!==1?"s":"")+'</div>';
   h+='</div>';
   h+='<div style="display:flex;gap:6px;flex-wrap:wrap">';
   h+='<button class="btn btn-sm btn-accent" onclick="startNewSession(\''+esc(a.id)+'\')">+ New</button>';
   h+='<button class="btn btn-sm" onclick="refreshSessions(\''+esc(a.id)+'\')">↻</button>';
-  if(mine.length>0)h+='<button class="btn btn-sm btn-danger" onclick="endAllSessions(\''+esc(a.id)+'\')">End All</button>';
+  if(roots.length>0)h+='<button class="btn btn-sm btn-danger" onclick="endAllSessions(\''+esc(a.id)+'\')">End All</button>';
   h+='</div></div></div>';
 
-  if(mine.length===0){
+  if(roots.length===0){
     h+='<div style="padding:32px;background:var(--bg2);border-radius:var(--radius);text-align:center;color:var(--tx3);font-size:14px">';
     h+='<div style="font-size:28px;margin-bottom:10px">💬</div>';
     h+='No sessions yet for this agent.<br><br>';
@@ -1936,24 +1952,74 @@ function renderSessions(a){
     return h;
   }
 
-  h+='<div class="flex-col gap-md">';
-  mine.forEach(function(s){
+  function renderSessionRow(s,indent){
     var sk=s.sessionKey||s.id||"";
     var ch=s.channel||"";
     var msgs=s.messageCount||0;
     var ago=s.updatedAt?fmtDate(s.updatedAt):"";
-    h+='<div class="session-row" onclick="openSessionChat(\''+esc(sk)+'\')">';
-    h+='<div class="session-row-left">';
-    h+='<div style="font-size:14px;font-weight:600;font-family:monospace;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">'+esc(sk)+'</div>';
-    h+='<div style="font-size:13px;color:var(--tx3);margin-top:3px;display:flex;gap:6px;flex-wrap:wrap;align-items:center">';
-    if(ch)h+='<span class="badge badge-blue">'+esc(ch)+'</span>';
-    h+='<span>'+msgs+' msg'+(msgs!==1?"s":"")+'</span>';
-    if(ago)h+='<span>'+ago+'</span>';
-    h+='</div></div>';
-    h+='<div style="display:flex;gap:6px;align-items:center;flex-shrink:0">';
-    h+='<button class="btn btn-sm btn-accent" onclick="event.stopPropagation();openSessionChat(\''+esc(sk)+'\')">💬</button>';
-    h+='<button class="btn btn-sm btn-danger" onclick="event.stopPropagation();endSession(\''+esc(sk)+'\')">✕</button>';
-    h+='</div></div>';
+    var model=s.model||"";
+    var gk=s.gatewayKey||"";
+    var label=s.agentId||sk;
+    // For subagents, show agent name prominently
+    if(gk.indexOf(":subagent:")>-1)label=s.agentId||"subagent";
+    var ml=indent*24;
+    var r='<div class="session-row'+(indent>0?' session-child':'')+'" style="'+(indent>0?'margin-left:24px;background:transparent;border:none;box-shadow:none;border-left:2px solid var(--accent);border-radius:0;padding-left:12px;':'""')+'" onclick="openSessionChat(\''+esc(sk)+'\')">';
+    r+='<div class="session-row-left">';
+    if(indent>0)r+='<span style="color:var(--accent);margin-right:6px;font-size:12px">↳</span>';
+    r+='<div style="font-size:14px;font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">';
+    r+=esc(label);
+    if(model)r+=' <span style="font-size:11px;color:var(--tx3);font-weight:400">'+esc(model)+'</span>';
+    r+='</div>';
+    r+='<div style="font-size:12px;color:var(--tx3);margin-top:2px;font-family:monospace;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">'+esc(sk)+'</div>';
+    r+='<div style="font-size:13px;color:var(--tx3);margin-top:3px;display:flex;gap:6px;flex-wrap:wrap;align-items:center">';
+    if(ch)r+='<span class="badge badge-blue">'+esc(ch)+'</span>';
+    r+='<span>'+msgs+' msg'+(msgs!==1?"s":"")+'</span>';
+    if(s.inputTokens)r+='<span>'+s.inputTokens+' in / '+(s.outputTokens||0)+' out</span>';
+    if(ago)r+='<span>'+ago+'</span>';
+    r+='</div></div>';
+    r+='<div style="display:flex;gap:6px;align-items:center;flex-shrink:0;margin-left:16px">';
+    r+='<button class="btn btn-sm btn-accent" onclick="event.stopPropagation();openSessionChat(\''+esc(sk)+'\')">💬</button>';
+    r+='<button class="btn btn-sm btn-danger" onclick="event.stopPropagation();endSession(\''+esc(sk)+'\')">✕</button>';
+    r+='</div></div>';
+    return r;
+  }
+
+  // Find children for a root session by checking which subagent sessions
+  // were created within the root session's time window
+  function findChildren(rootSession){
+    var rootUpdated=rootSession.updatedAt?new Date(rootSession.updatedAt).getTime():0;
+    var rootCreated=rootSession.createdAt?new Date(rootSession.createdAt).getTime():rootUpdated;
+    if(!rootUpdated)return[];
+    var rootAgent=rootSession.agentId||"";
+    var config=D.config||{};
+    var agents=(config.agents&&config.agents.list)||[];
+    var rootCfg=agents.filter(function(ag){return ag.id===rootAgent})[0];
+    var allowedChildren=(rootCfg&&rootCfg.subagents&&rootCfg.subagents.allowAgents)||[];
+    if(allowedChildren.length===0)return[];
+
+    var matched=[];
+    children.forEach(function(c){
+      var childAgent=c.agentId||"";
+      if(allowedChildren.indexOf(childAgent)<0)return;
+      // Check if child was active during the parent's time window
+      var childUpdated=c.updatedAt?new Date(c.updatedAt).getTime():0;
+      var childCreated=c.createdAt?new Date(c.createdAt).getTime():childUpdated;
+      if(!childUpdated)return;
+      // Child must have been created after parent started and before parent's last update + 5min buffer
+      if(childCreated>=rootCreated-60000&&childUpdated<=rootUpdated+300000){
+        matched.push(c);
+      }
+    });
+    return matched;
+  }
+
+  h+='<div class="flex-col gap-sm">';
+  roots.forEach(function(s){
+    h+=renderSessionRow(s,0);
+    var kids=findChildren(s);
+    kids.forEach(function(c){
+      h+=renderSessionRow(c,1);
+    });
   });
   h+='</div>';
   return h;
@@ -2011,16 +2077,32 @@ function endSession(key){
   }).catch(function(e){_hideProgress();toast(e.message,"err")});
 }
 function endAllSessions(agentId){
-  var mine=(D.sessions||[]).filter(function(s){var sk=s.sessionKey||s.id||"";if(sk==="sessions")return false;return s.agentId===agentId||sk.indexOf(agentId+"-")===0});
+  // Find root sessions and children
+  var all=D.sessions||[];
+  var config=D.config||{};
+  var agents=(config.agents&&config.agents.list)||[];
+  var agentCfg=agents.filter(function(ag){return ag.id===agentId})[0];
+  var childIds=(agentCfg&&agentCfg.subagents&&agentCfg.subagents.allowAgents)||[];
+  var allIds=[agentId].concat(childIds);
+  var mine=all.filter(function(s){
+    var sk=s.sessionKey||s.id||"";
+    if(sk==="sessions")return false;
+    return allIds.indexOf(s.agentId)>-1||sk.indexOf(agentId+"-")===0;
+  });
   if(mine.length===0){toast("No sessions to end","err");return}
-  if(!confirm("End all "+mine.length+" session"+(mine.length>1?"s":"")+" for "+agentId+"? This will delete all session files."))return;
+  var childCount=mine.filter(function(s){return s.agentId!==agentId}).length;
+  var msg="End "+mine.length+" session"+(mine.length>1?"s":"")+" for "+agentId;
+  if(childCount>0)msg+=" (including "+childCount+" subagent session"+(childCount>1?"s":"")+")";
+  msg+="?";
+  if(!confirm(msg))return;
   _showProgress();
-  // Use bulk delete endpoint to clean up all files at once
   api("sessions/all:"+encodeURIComponent(agentId),{method:"DELETE"}).then(function(d){
     _hideProgress();
-    // Remove from local data
-    D.sessions=(D.sessions||[]).filter(function(s){var sk=s.sessionKey||s.id||"";return s.agentId!==agentId&&sk.indexOf(agentId+"-")!==0});
-    toast("All sessions ended and files cleaned up","ok");
+    D.sessions=(D.sessions||[]).filter(function(s){
+      var sk=s.sessionKey||s.id||"";
+      return allIds.indexOf(s.agentId)<0&&sk.indexOf(agentId+"-")!==0;
+    });
+    toast("All sessions ended","ok");
     if(drawerAgent){var db=Q("drawer-body");if(db)db.innerHTML=renderSessions(drawerAgent)}
   }).catch(function(e){
     _hideProgress();
@@ -2045,6 +2127,14 @@ function openSessionChat(key){
   });
 }
 
+var _chatHideInternal=true;
+var _chatLastMsgs=null;
+function _toggleChatInternal(){
+  _chatHideInternal=!_chatHideInternal;
+  var btn=Q("chat-filter-btn");
+  if(btn)btn.textContent=_chatHideInternal?"Show Internal":"Hide Internal";
+  if(_chatLastMsgs)_renderChatMessages(_chatLastMsgs,false);
+}
 function _openChatFullscreen(key,msgs,loading){
   var existing=Q("chat-fullscreen");
   if(existing)existing.remove();
@@ -2053,8 +2143,10 @@ function _openChatFullscreen(key,msgs,loading){
   ov.className="fs-editor-overlay";
   ov.classList.add("chat-fs");
   var shortKey=key.length>30?key.substring(0,28)+"…":key;
-  ov.innerHTML='<div class="fs-editor-head"><h3>💬 '+esc(shortKey)+'</h3>'
-    +'<button class="btn btn-sm" onclick="closeChatView()">✕ Close</button></div>'
+  ov.innerHTML='<div class="fs-editor-head"><h3 style="flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">💬 '+esc(shortKey)+'</h3>'
+    +'<div style="display:flex;gap:8px;align-items:center;flex-shrink:0;margin-left:16px">'
+    +'<button class="btn btn-sm" id="chat-filter-btn" onclick="_toggleChatInternal()">'+(  _chatHideInternal?"Show Internal":"Hide Internal")+'</button>'
+    +'<button class="btn btn-sm" onclick="closeChatView()">✕ Close</button></div></div>'
     +'<div id="chat-msgs" class="chat-msgs-container">'
     +(loading?'<div class="loading-center"><span class="spin"></span> Loading…</div>':'')
     +'</div>'
@@ -2082,7 +2174,7 @@ function _openChatModal(key,msgs,loading){
 
 function _renderChatMessages(msgs,keepPending){
   var el=Q("chat-msgs");if(!el)return;
-  // Check if user is near the bottom before updating
+  if(msgs)_chatLastMsgs=msgs;
   var wasNearBottom=el.scrollHeight-el.scrollTop-el.clientHeight<80;
   var h="";
   if(!msgs||msgs.length===0){
@@ -2091,9 +2183,45 @@ function _renderChatMessages(msgs,keepPending){
     msgs.forEach(function(m){
       var role=m.role||"system";
       var content=m.content||m.text||"";
-      if(Array.isArray(content))content=content.map(function(c){return typeof c==="string"?c:(c.text||"")}).join("\n");
-      h+='<div class="chat-msg '+esc(role)+'">';
-      h+='<div class="chat-role-label">'+esc(role==="user"?"you":role)+'</div>';
+      var isInternal=false;
+      // toolResult is internal
+      if(role==="toolResult"||role==="tool"){
+        if(_chatHideInternal)return;
+        isInternal=true;
+      }
+      if(Array.isArray(content)){
+        var textParts=[];
+        var thinkingParts=[];
+        content.forEach(function(c){
+          if(typeof c==="string"){textParts.push(c)}
+          else if(c.type==="thinking"&&c.thinking){thinkingParts.push(c.thinking)}
+          else if(c.text){textParts.push(c.text)}
+        });
+        var textContent=textParts.join("\n");
+        if(textContent.indexOf("OPENCLAW_INTERNAL_CONTEXT")>-1||textContent.indexOf("<<<BEGIN_OPENCLAW")>-1){
+          isInternal=true;
+        }
+        if(_chatHideInternal){
+          if(isInternal)return;
+          content=textContent;
+        }else{
+          var parts=[];
+          if(thinkingParts.length>0)parts.push("[thinking] "+thinkingParts.join("\n"));
+          if(textContent)parts.push(textContent);
+          content=parts.join("\n\n");
+        }
+      }else{
+        if(_chatHideInternal&&(content.indexOf("OPENCLAW_INTERNAL_CONTEXT")>-1||content.indexOf("<<<BEGIN_OPENCLAW")>-1))return;
+      }
+      if(!content||!content.trim())return;
+      if(content.trim()==="NO_REPLY")return;
+      // Strip OpenClaw reply routing tags and injected timestamps
+      content=content.replace(/\[\[\s*reply_to_current\s*\]\]\s*/g,"").replace(/\[\[\s*reply_to:\s*[^\]]*\]\]\s*/g,"");
+      if(role==="user")content=content.replace(/^\[.*?\]\s*/,"");
+      content=content.trim();
+      if(!content)return;
+      h+='<div class="chat-msg '+esc(role)+(isInternal?" chat-internal":"")+'">';
+      h+='<div class="chat-role-label">'+esc(role==="user"?"you":(role==="toolResult"?"tool":role))+'</div>';
       h+='<div class="chat-bubble">'+esc(content)+'</div></div>';
     });
   }
@@ -2101,7 +2229,6 @@ function _renderChatMessages(msgs,keepPending){
     h+='<div class="chat-msg assistant" id="chat-pending"><div class="chat-role-label">agent</div><div class="chat-bubble"><span class="spin"></span> Thinking…</div></div>';
   }
   el.innerHTML=h;
-  // Only auto-scroll if user was already at the bottom
   if(wasNearBottom)el.scrollTop=el.scrollHeight;
 }
 
@@ -2161,8 +2288,8 @@ function sendMsg(key){
       inp.disabled=false;
       inp.focus();
       el.scrollTop=el.scrollHeight;
-      // Refresh full conversation to ensure correct ordering
-      _refreshChatMessages(key);
+      // Delay refresh to give the gateway time to write the JSONL
+      setTimeout(function(){_refreshChatMessages(key)},3000);
     })
     .catch(function(e){
       var p=Q("chat-pending");
