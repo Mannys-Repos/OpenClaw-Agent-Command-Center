@@ -2014,6 +2014,27 @@ function renderSessions(a){
     }
   });
 
+  // Deduplicate: if multiple root sessions for the same agent resolve to the same
+  // underlying JSONL (same content), keep only the one with the most messages.
+  // Heuristic: sessions with messageCount=0 are stale index entries — drop them if
+  // another session for the same agent has actual messages.
+  if(roots.length>1){
+    // Sort by messageCount descending so the richest session wins
+    roots.sort(function(a,b){return(b.messageCount||0)-(a.messageCount||0)});
+    var seen={};
+    var deduped=[];
+    roots.forEach(function(s){
+      // Key by sessionKey (JSONL filename) — if two gateway keys point to the same sessionKey, dedup
+      var sk=s.sessionKey||s.id||"";
+      if(seen[sk]){return}// exact duplicate sessionKey
+      seen[sk]=true;
+      // Also skip zero-message sessions if we already have one with messages
+      if((s.messageCount||0)===0&&deduped.length>0&&(deduped[0].messageCount||0)>0){return}
+      deduped.push(s);
+    });
+    roots=deduped;
+  }
+
   var active=roots.length+children.filter(function(c){
     // Count children that belong to this agent's roots
     return true;
@@ -2608,6 +2629,7 @@ function removePeer(id,peerId){
 function _saveGlobalPeers(peers,msg){
   var config=JSON.parse(JSON.stringify(D.config||{}));
   if(!config.tools)config.tools={};
+  var oldPeers=getPeers().slice();
   if(peers.length>0){
     config.tools.agentToAgent={enabled:true,allow:peers};
   }else{
@@ -2616,11 +2638,28 @@ function _saveGlobalPeers(peers,msg){
   api("config",{method:"PUT",body:JSON.stringify({config:config})}).then(function(){
     D.config=config;
     toast(msg,"ok");_showRestartBanner();
-    // Sync subagents: each peer must have all other peers in allowAgents
+    // Sync subagents: add new peers, remove departed peers
     _syncPeerSubagents(peers);
+    // Clean up: remove departed peers from all agents' subagent lists
+    var removed=oldPeers.filter(function(p){return peers.indexOf(p)===-1});
+    if(removed.length>0)_cleanupRemovedPeers(removed,peers);
     if(drawerAgent)renderDrawer();
     _invalidateAndRedraw();
   }).catch(function(e){toast(e.message,"err")});
+}
+// Remove departed peers from all other agents' subagent lists
+function _cleanupRemovedPeers(removedIds,currentPeers){
+  (D.agents||[]).forEach(function(a){
+    // Only clean up peer agents (non-peers manage their own subagents)
+    if(currentPeers.indexOf(a.id)===-1)return;
+    var cur=getSubs(a).slice();
+    var cleaned=cur.filter(function(s){return removedIds.indexOf(s)===-1});
+    if(cleaned.length===cur.length)return;// nothing to remove
+    var patch={subagents:{allowAgents:cleaned}};
+    api("agents/"+encodeURIComponent(a.id),{method:"PUT",body:JSON.stringify(patch)})
+      .then(function(){_updateAgentLocal(a.id,patch)})
+      .catch(function(){});
+  });
 }
 // Ensure every A2A peer agent has all other peers in its subagents.allowAgents
 function _syncPeerSubagents(peers){
