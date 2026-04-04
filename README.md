@@ -80,7 +80,7 @@ Add to `~/.openclaw/openclaw.json`:
 |------------------|---------------------------|-----------------------------------------------------------------------------|
 | `port`           | `19900`                   | HTTP port for the dashboard server                                          |
 | `title`          | `OpenClaw Command Center` | Page title and PWA name                                                     |
-| `allowedOrigins` | `[]`                      | Extra origins allowed to call the API (e.g. `["http://10.10.6.48:19900"]`)  |
+| `allowedOrigins` | `[]`                      | Extra origins allowed to call the API (e.g. `["http://your-server:19900"]`) |
 
 Restart the gateway, then open **http://localhost:19900**.
 
@@ -115,8 +115,3 @@ CSS and client JS (`dashboard.css`, `dashboard.js.txt`) are served from `src/` a
 runtime — changes don't require a rebuild, just a browser refresh. Only `*.ts` changes
 need `tsc`.
 
----
-
-## License
-
-MIT
