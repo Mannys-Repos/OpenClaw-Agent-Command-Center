@@ -40,7 +40,13 @@ export default function register(api: any) {
 
     function isOriginAllowed(origin: string | undefined): boolean {
         if (!origin) return true; // same-origin requests (no Origin header)
-        return allowedOriginSet.has(origin);
+        if (allowedOriginSet.has(origin)) return true;
+        // Auto-allow any origin that targets our own port (the dashboard calling its own API)
+        try {
+            const u = new URL(origin);
+            if (String(u.port || 80) === String(port)) return true;
+        } catch { }
+        return false;
     }
 
     // Register as a background service — runs its own HTTP server
