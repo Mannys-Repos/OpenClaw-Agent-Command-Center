@@ -535,6 +535,25 @@ function _enableNav(){
   items.forEach(function(i){i.classList.remove("nav-disabled")});
 }
 
+// Silently wait for gateway to come back after a config-triggered restart, then reload data
+function _reconnectAfterRestart(){
+  var attempts=0;
+  var maxAttempts=20;
+  function poll(){
+    attempts++;
+    if(attempts>maxAttempts)return;
+    fetch("/api/overview?fast=1").then(function(r){
+      if(r.ok)return r.json();
+      throw new Error("not ready");
+    }).then(function(){
+      load({fast:true,_quiet:true});
+    }).catch(function(){
+      setTimeout(poll,1500);
+    });
+  }
+  setTimeout(poll,2000);
+}
+
 // Config error banner removed — was disruptive and unhelpful
 function _showConfigError(){}
 function _hideConfigError(){}
@@ -737,33 +756,34 @@ function drawRelMap(){
   var agents=D.agents||[],edges=buildRelGraph(),chNodes=buildChannelNodes();
   var W=Math.min(canvas.offsetWidth||window.innerWidth,window.innerWidth);
   var H=canvas.offsetHeight||400;
+  if(agents.length===0)return;
 
-  // ── Layout constants — scale spacing based on agent count ──
-  var agentCount=agents.length;
-  var FONT_SIZE=14;
-  // Tighter spacing when many agents, more generous when few
-  var PAD_H=agentCount>6?22:28,PAD_V=agentCount>6?12:14,ICON_H=18;
-  var LINE_H=16; // height per line of metadata
-  var CH_FONT=13,CH_PAD_H=agentCount>6?18:22,CH_PAD_V=agentCount>6?10:12;
-  var CH_H=CH_FONT+CH_PAD_V*2+4;
+  // ── Constants ──
+  var FONT_SIZE=14,PAD_H=26,PAD_V=14,ICON_H=18,LINE_H=16;
+  var CH_FONT=13,CH_PAD_H=22,CH_PAD_V=12,CH_H=CH_FONT+CH_PAD_V*2+4;
   var isMobileViewport=W<600;
-  var PADX=agentCount>6?32:44,PADY=agentCount>6?44:56,MARGIN=isMobileViewport?16:40;
+  var PADX=50,PADY=60,MARGIN=isMobileViewport?16:40;
 
-  // Measure node widths AND compute per-node heights based on content
-  var nodeWidths={};
-  var nodeHeights={};
+  // ── Measure nodes ──
+  // Build agent → channel map for badge height calculation
+  var agentChMap={};
+  (D.bindings||[]).forEach(function(b){
+    if(!b.agentId||!b.match||!b.match.channel)return;
+    if(!agentChMap[b.agentId])agentChMap[b.agentId]={};
+    agentChMap[b.agentId][b.match.channel]=true;
+  });
+  var nodeWidths={},nodeHeights={};
   agents.forEach(function(a){
     var label=a.name||a.id;
     var tw=measureText(label,"600 "+FONT_SIZE+"px -apple-system,BlinkMacSystemFont,sans-serif");
-    nodeWidths[a.id]=Math.max(agentCount>6?100:120,Math.round(tw+PAD_H*2));
-    // Count content lines: icon + name always present, then optional model/heartbeat/default
+    nodeWidths[a.id]=Math.max(120,Math.round(tw+PAD_H*2));
     var extraLines=0;
     if(getModel(a))extraLines++;
     if(a.heartbeat&&a.heartbeat.every)extraLines++;
     if(a["default"])extraLines++;
+    if(agentChMap[a.id])extraLines++;// channel badge row
     nodeHeights[a.id]=ICON_H+FONT_SIZE+PAD_V*2+extraLines*LINE_H+16;
   });
-  // Use the tallest node height for uniform rows
   var NH=Math.max.apply(null,Object.values(nodeHeights).concat([70]));
   var chWidths={};
   chNodes.forEach(function(ch){
@@ -771,61 +791,142 @@ function drawRelMap(){
     chWidths[ch.id]=Math.max(80,Math.round(tw+CH_PAD_H*2+28));
   });
 
-  // Build delegation hierarchy (cycle-safe: ignore peer↔peer edges for layering)
-  var children={},parents={};
-  var peerSetLayout={};
-  getPeers().forEach(function(id){peerSetLayout[id]=true});
-  agents.forEach(function(a){children[a.id]=[];parents[a.id]=[]});
+  // ── Build edge index & detect bidirectional edges ──
+  var peerSet={};
+  getPeers().forEach(function(id){peerSet[id]=true});
+
+  // Collect delegation edges, merging bidirectional into one
+  var delEdges=[];
+  var delMap={};
   edges.forEach(function(e){
     if(e.type!=="delegates")return;
-    // Skip peer↔peer delegation edges for hierarchy — they're bidirectional, not parent→child
-    if(peerSetLayout[e.from]&&peerSetLayout[e.to])return;
-    if(children[e.from])children[e.from].push(e.to);
-    if(parents[e.to])parents[e.to].push(e.from);
+    var fwd=e.from+"->"+e.to;
+    var rev=e.to+"->"+e.from;
+    if(delMap[rev]!==undefined){
+      delEdges[delMap[rev]].bidir=true;
+    }else{
+      delMap[fwd]=delEdges.length;
+      delEdges.push({from:e.from,to:e.to,bidir:false});
+    }
   });
-  // Identify roots: agents with no parents in the filtered graph
+
+  // ── Hierarchical layering ──
+  var children={},parents={};
+  agents.forEach(function(a){children[a.id]=[];parents[a.id]=[]});
+  delEdges.forEach(function(e){
+    if(e.bidir)return;
+    if(peerSet[e.from]&&peerSet[e.to])return;
+    children[e.from].push(e.to);
+    parents[e.to].push(e.from);
+  });
+
   var layerOf={};
   var roots=agents.filter(function(a){return parents[a.id].length===0}).map(function(a){return a.id});
   if(!roots.length){
-    // All agents have parents (full cycle) — pick the one with fewest parents
     var sorted=agents.slice().sort(function(a,b){return parents[a.id].length-parents[b.id].length});
     roots=[sorted[0].id];
   }
-  // BFS: assign layers. Once a node is visited, its layer is LOCKED (no back-edge promotion)
-  var q=roots.slice();roots.forEach(function(id){layerOf[id]=0});
+  var bfsQ=roots.slice();
+  roots.forEach(function(id){layerOf[id]=0});
   var vis={};
-  while(q.length){
-    var cur=q.shift();
+  while(bfsQ.length){
+    var cur=bfsQ.shift();
     if(vis[cur])continue;vis[cur]=true;
     (children[cur]||[]).forEach(function(c){
-      if(vis[c])return; // already placed — skip back-edge
+      if(vis[c])return;
       var nl=(layerOf[cur]||0)+1;
       if(layerOf[c]===undefined||layerOf[c]<nl)layerOf[c]=nl;
-      q.push(c);
+      bfsQ.push(c);
     });
   }
   agents.forEach(function(a){if(layerOf[a.id]===undefined)layerOf[a.id]=0});
+
+  // Promote bidirectional partners to the same layer
+  delEdges.forEach(function(e){
+    if(!e.bidir)return;
+    var minL=Math.min(layerOf[e.from],layerOf[e.to]);
+    layerOf[e.from]=minL;layerOf[e.to]=minL;
+  });
+
+  // Compact layers
+  var usedLayers={};
+  agents.forEach(function(a){usedLayers[layerOf[a.id]]=true});
+  var sortedLayers=Object.keys(usedLayers).map(Number).sort(function(a,b){return a-b});
+  var layerRemap={};
+  sortedLayers.forEach(function(l,i){layerRemap[l]=i});
+  agents.forEach(function(a){layerOf[a.id]=layerRemap[layerOf[a.id]]});
+
   var maxL=0;agents.forEach(function(a){if(layerOf[a.id]>maxL)maxL=layerOf[a.id]});
   var tiers=[];for(var l=0;l<=maxL;l++)tiers.push([]);
   agents.forEach(function(a){tiers[layerOf[a.id]].push(a.id)});
-  // Barycenter ordering: sort each tier so children are near their parents
-  for(var pass=0;pass<3;pass++){for(var li=1;li<=maxL;li++){var prev2={};tiers[li-1].forEach(function(id,i){prev2[id]=i});tiers[li].sort(function(a,b){var pa=parents[a],pb=parents[b];var ba=pa.length?pa.reduce(function(s,p){return s+(prev2[p]!==undefined?prev2[p]:0)},0)/pa.length:0;var bb=pb.length?pb.reduce(function(s,p){return s+(prev2[p]!==undefined?prev2[p]:0)},0)/pb.length:0;return ba-bb})}}
-  // Position agent nodes
+
+  // Barycenter ordering (3 passes)
+  for(var pass=0;pass<3;pass++){for(var li=1;li<=maxL;li++){var prev2={};tiers[li-1].forEach(function(id,i){prev2[id]=i});tiers[li].sort(function(a,b){var pa=parents[a]||[],pb=parents[b]||[];var ba=pa.length?pa.reduce(function(s,p){return s+(prev2[p]!==undefined?prev2[p]:0)},0)/pa.length:999;var bb=pb.length?pb.reduce(function(s,p){return s+(prev2[p]!==undefined?prev2[p]:0)},0)/pb.length:999;return ba-bb})}}
+
+  // ── Position nodes ──
+  // First, lay out all tiers normally
+  var peerIds=Object.keys(peerSet).filter(function(id){
+    return agents.some(function(a){return a.id===id});
+  });
   var pos={};
+  // Check if layer 0 has non-peer roots that need separation
+  var tier0Peers=(tiers[0]||[]).filter(function(id){return peerSet[id]});
+  var tier0NonPeers=(tiers[0]||[]).filter(function(id){return!peerSet[id]});
+  var hasNonPeerRoots=tier0NonPeers.length>0&&tier0Peers.length>=2;
+
+  // If we need to separate, add an extra visual row for non-peer roots
+  var layerOffset=hasNonPeerRoots?1:0;
+
+  // Position peer roots (layer 0)
+  if(hasNonPeerRoots){
+    var peerW=0;
+    tier0Peers.forEach(function(id,ni){peerW+=nodeWidths[id]||120;if(ni<tier0Peers.length-1)peerW+=PADX});
+    var cx=-peerW/2;
+    tier0Peers.forEach(function(id){
+      var nw=nodeWidths[id]||120;
+      pos[id]={x:cx,y:0,w:nw,h:NH};
+      cx+=nw+PADX;
+    });
+  }
+
+  // Position all tiers (skip tier0 peers if already placed)
   tiers.forEach(function(tier,li){
+    var items=tier;
+    if(li===0&&hasNonPeerRoots){
+      items=tier0NonPeers;// only position non-peers for tier 0
+    }
+    var actualY=(li+layerOffset)*(NH+PADY);
+    if(li===0&&!hasNonPeerRoots)actualY=0;
+    if(li===0&&hasNonPeerRoots)actualY=NH+PADY;// non-peer roots go on row 1
+
     var rowW=0;
-    tier.forEach(function(id,ni){rowW+=nodeWidths[id]||100;if(ni<tier.length-1)rowW+=PADX});
+    items.forEach(function(id,ni){rowW+=nodeWidths[id]||120;if(ni<items.length-1)rowW+=PADX});
     var cx=-rowW/2;
-    tier.forEach(function(id,ni){
-      var nw=nodeWidths[id]||100;
-      pos[id]={x:cx,y:li*(NH+PADY),w:nw,h:NH};
+    items.forEach(function(id){
+      if(pos[id])return;// already positioned (peer roots)
+      var nw=nodeWidths[id]||120;
+      pos[id]={x:cx,y:actualY,w:nw,h:NH};
       cx+=nw+PADX;
     });
   });
-  // Place channel nodes BELOW agents, near the agents they're bound to
+
+  // Center non-peer roots under their children
+  if(hasNonPeerRoots){
+    tier0NonPeers.forEach(function(id){
+      var ch=children[id]||[];
+      if(ch.length>0){
+        var sum=0,cnt=0;
+        ch.forEach(function(cid){if(pos[cid]){sum+=pos[cid].x+pos[cid].w/2;cnt++}});
+        if(cnt>0)pos[id].x=sum/cnt-pos[id].w/2;
+      }
+    });
+  }
+  // Place channel nodes BELOW agents, centered under their bound agents
   if(chNodes.length>0){
-    var chY=(maxL+1)*(NH+PADY)+20;
-    // For each channel, compute average X of bound agents to position it nearby
+    // Find the actual lowest agent Y
+    var maxAgentY=0;
+    agents.forEach(function(a){if(pos[a.id]&&pos[a.id].y+pos[a.id].h>maxAgentY)maxAgentY=pos[a.id].y+pos[a.id].h});
+    var chY=maxAgentY+PADY;
     var chBindMap={};
     edges.forEach(function(e){
       if(e.type!=="channel")return;
@@ -837,9 +938,9 @@ function drawRelMap(){
       var boundAgents=chBindMap[ch.id]||[];
       var avgX=0;
       if(boundAgents.length>0){
-        var sum=0;
-        boundAgents.forEach(function(aid){var p=pos[aid];if(p)sum+=p.x+p.w/2});
-        avgX=sum/boundAgents.length-cw/2;
+        var sum=0,cnt=0;
+        boundAgents.forEach(function(aid){var p=pos[aid];if(p){sum+=p.x+p.w/2;cnt++}});
+        if(cnt>0)avgX=sum/cnt-cw/2;
       }
       pos[ch.id]={x:avgX,y:chY,w:cw,h:CH_H};
     });
@@ -864,7 +965,7 @@ function drawRelMap(){
       var tw=measureText(infraLabel,"600 "+CH_FONT+"px -apple-system,BlinkMacSystemFont,sans-serif");
       var infraW=Math.max(120,Math.round(tw+CH_PAD_H*2+44));
       // Position to the right of channels, or centered if no channels
-      var infraY=chNodes.length>0?(maxL+1)*(NH+PADY)+20:(maxL+1)*(NH+PADY)+20;
+      var infraY=chNodes.length>0?pos[chNodes[0].id].y:((function(){var my=0;agents.forEach(function(a){if(pos[a.id]&&pos[a.id].y+pos[a.id].h>my)my=pos[a.id].y+pos[a.id].h});return my+PADY})());
       var allXs=Object.values(pos).map(function(p){return p.x+p.w/2});
       var maxPosX=allXs.length?Math.max.apply(null,allXs):0;
       var infraX=maxPosX+PADX;
@@ -877,7 +978,7 @@ function drawRelMap(){
   var minY=Math.min.apply(null,allP.map(function(p){return p.y}));
   var maxY=Math.max.apply(null,allP.map(function(p){return p.y+p.h}));
   // Expand bounds to include peer group box + label if peers exist
-  var peerIds2=Object.keys(peerSetLayout).filter(function(id){return!!pos[id]});
+  var peerIds2=Object.keys(peerSet).filter(function(id){return!!pos[id]});
   if(peerIds2.length>=2){
     var pgPadBounds=isMobileViewport?16:24;
     var pgMinX=Infinity,pgMaxX=-Infinity,pgMinY=Infinity,pgMaxY=-Infinity;
@@ -935,18 +1036,28 @@ function drawRelMap(){
   svg.setAttribute("width",layerW);svg.setAttribute("height",layerH);
   svg.setAttribute("class","rel-svg");
   var defs=document.createElementNS(ns,"defs");
-  // Delegation arrowhead
-  var mkDel=document.createElementNS(ns,"marker");
-  mkDel.setAttribute("id","arr-del");mkDel.setAttribute("markerWidth","8");mkDel.setAttribute("markerHeight","6");
-  mkDel.setAttribute("refX","7");mkDel.setAttribute("refY","3");mkDel.setAttribute("orient","auto");mkDel.setAttribute("markerUnits","strokeWidth");
-  var pDel=document.createElementNS(ns,"path");pDel.setAttribute("d","M0,0.5 L7,3 L0,5.5");pDel.setAttribute("fill","none");pDel.setAttribute("stroke","#7c6cf0");pDel.setAttribute("stroke-width","1.5");pDel.setAttribute("stroke-linejoin","round");
-  mkDel.appendChild(pDel);defs.appendChild(mkDel);
-  // Channel arrowhead
-  var mkCh=document.createElementNS(ns,"marker");
-  mkCh.setAttribute("id","arr-ch");mkCh.setAttribute("markerWidth","6");mkCh.setAttribute("markerHeight","5");
-  mkCh.setAttribute("refX","5");mkCh.setAttribute("refY","2.5");mkCh.setAttribute("orient","auto");mkCh.setAttribute("markerUnits","strokeWidth");
-  var pCh=document.createElementNS(ns,"path");pCh.setAttribute("d","M0,0.5 L5,2.5 L0,4.5");pCh.setAttribute("fill","none");pCh.setAttribute("stroke","#3498db");pCh.setAttribute("stroke-width","1");
-  mkCh.appendChild(pCh);defs.appendChild(mkCh);
+  // Arrowhead markers
+  function addMarker(id,color,sz){
+    var mk=document.createElementNS(ns,"marker");
+    mk.setAttribute("id",id);mk.setAttribute("markerWidth",sz);mk.setAttribute("markerHeight",sz*0.75);
+    mk.setAttribute("refX",sz-1);mk.setAttribute("refY",sz*0.375);
+    mk.setAttribute("orient","auto");mk.setAttribute("markerUnits","strokeWidth");
+    var p=document.createElementNS(ns,"path");
+    p.setAttribute("d","M0,0.5 L"+(sz-1)+","+sz*0.375+" L0,"+(sz*0.75-0.5));
+    p.setAttribute("fill","none");p.setAttribute("stroke",color);p.setAttribute("stroke-width","1.5");p.setAttribute("stroke-linejoin","round");
+    mk.appendChild(p);defs.appendChild(mk);
+  }
+  addMarker("arr-del","#7c6cf0",8);
+  addMarker("arr-ch","#3498db",6);
+  // Reverse arrowhead for bidirectional
+  var mkRev=document.createElementNS(ns,"marker");
+  mkRev.setAttribute("id","arr-del-rev");mkRev.setAttribute("markerWidth","8");mkRev.setAttribute("markerHeight","6");
+  mkRev.setAttribute("refX","1");mkRev.setAttribute("refY","3");
+  mkRev.setAttribute("orient","auto");mkRev.setAttribute("markerUnits","strokeWidth");
+  var pRev=document.createElementNS(ns,"path");
+  pRev.setAttribute("d","M8,0.5 L1,3 L8,5.5");pRev.setAttribute("fill","none");
+  pRev.setAttribute("stroke","#7c6cf0");pRev.setAttribute("stroke-width","1.5");pRev.setAttribute("stroke-linejoin","round");
+  mkRev.appendChild(pRev);defs.appendChild(mkRev);
   svg.appendChild(defs);
 
   function edgePt(id,tx,ty){
@@ -956,34 +1067,25 @@ function drawRelMap(){
     return{x:cx+ux*t,y:cy+uy*t};
   }
 
-  // Draw delegation + channel edges only (peers shown as group box)
-  // Build peer set for edge suppression
-  var peerSet={};
-  getPeers().forEach(function(id){peerSet[id]=true});
-
-  edges.forEach(function(e){
-    if(e.type==="peer")return;
-    // Suppress delegation arrows between two peers — the peer group box shows the relationship
-    if(e.type==="delegates"&&peerSet[e.from]&&peerSet[e.to])return;
-    var srcId=e.type==="channel"?e.to:e.from;
-    var dstId=e.type==="channel"?e.from:e.to;
-    var sp=uPos[srcId],dp=uPos[dstId];if(!sp||!dp)return;
+  // Draw delegation edges (merged bidirectional = single line with arrows on both ends)
+  var peerSet2={};getPeers().forEach(function(id){peerSet2[id]=true});
+  delEdges.forEach(function(e){
+    if(peerSet2[e.from]&&peerSet2[e.to])return;
+    var sp=uPos[e.from],dp=uPos[e.to];if(!sp||!dp)return;
     var sx=sp.x+sp.w/2,sy=sp.y+sp.h/2,dx=dp.x+dp.w/2,dy=dp.y+dp.h/2;
-    var p1=edgePt(srcId,dx,dy),p2=edgePt(dstId,sx,sy);
-    var path=document.createElementNS(ns,"path");
+    var p1=edgePt(e.from,dx,dy),p2=edgePt(e.to,sx,sy);
     var mx=(p1.x+p2.x)/2,my=(p1.y+p2.y)/2;
-    var nx=-(p2.y-p1.y)*0.08,ny=(p2.x-p1.x)*0.08;
+    var nx=-(p2.y-p1.y)*0.1,ny=(p2.x-p1.x)*0.1;
+    var path=document.createElementNS(ns,"path");
     path.setAttribute("d","M"+p1.x+","+p1.y+" Q"+(mx+nx)+","+(my+ny)+" "+p2.x+","+p2.y);
     path.setAttribute("fill","none");
-    if(e.type==="delegates"){
-      path.setAttribute("stroke","#7c6cf0");path.setAttribute("stroke-width","1.8");path.setAttribute("stroke-opacity","0.65");
-      path.setAttribute("marker-end","url(#arr-del)");
-    }else{
-      path.setAttribute("stroke","#3498db");path.setAttribute("stroke-width","1.2");path.setAttribute("stroke-dasharray","4,4");path.setAttribute("stroke-opacity","0.35");
-      path.setAttribute("marker-end","url(#arr-ch)");
-    }
+    path.setAttribute("stroke","#7c6cf0");path.setAttribute("stroke-width","1.8");path.setAttribute("stroke-opacity","0.65");
+    path.setAttribute("marker-end","url(#arr-del)");
+    if(e.bidir)path.setAttribute("marker-start","url(#arr-del-rev)");
     svg.appendChild(path);
   });
+
+  // Channel connections shown as badges on agent nodes instead of edges
 
   // Draw peer group box — rounded rect around all peer nodes
   var peerIds=Object.keys(peerSet).filter(function(id){return!!uPos[id]});
@@ -1017,10 +1119,18 @@ function drawRelMap(){
 
   domLayer.appendChild(svg);
 
+  // Build agent → channel map for badges
+  var CH_ICONS={whatsapp:"💬",telegram:"✈️",discord:"🎮",slack:"💼",signal:"🔒",matrix:"🔷",webchat:"🌐",irc:"📡"};
+  var agentChannels={};
+  (D.bindings||[]).forEach(function(b){
+    if(!b.agentId||!b.match||!b.match.channel)return;
+    if(!agentChannels[b.agentId])agentChannels[b.agentId]={};
+    agentChannels[b.agentId][b.match.channel]=true;
+  });
+
   // Agent nodes
   agents.forEach(function(a){
     var p=uPos[a.id];if(!p)return;
-    var isPeer=!!peerSet[a.id];
     var n=document.createElement("div");
     n.className="rn";n.setAttribute("data-id",a.id);
     n.style.cssText="position:absolute;left:"+p.x+"px;top:"+p.y+"px;width:"+p.w+"px;height:"+p.h+"px;"
@@ -1034,29 +1144,20 @@ function drawRelMap(){
     if(model)html+='<div class="rn-model">'+esc(model)+'</div>';
     if(hb.every)html+='<div class="rn-heartbeat">♡ '+esc(hb.every)+(hb.model?' · '+esc(hb.model):'')+'</div>';
     if(a["default"])html+='<div class="rn-default">default</div>';
+    // Channel badges
+    var chMap=agentChannels[a.id];
+    if(chMap){
+      var chNames=Object.keys(chMap);
+      html+='<div class="rn-channels">';
+      chNames.forEach(function(ch){
+        html+='<span class="rn-ch-badge">'+(CH_ICONS[ch]||"📡")+' '+esc(ch)+'</span>';
+      });
+      html+='</div>';
+    }
     n.innerHTML=html;
     n.addEventListener("mouseenter",function(){n.classList.add("hovered");n.classList.remove("inactive")});
     n.addEventListener("mouseleave",function(){n.classList.remove("hovered");if(drawerAgent&&drawerAgent.id===a.id){n.classList.add("active-node");n.classList.remove("inactive")}else{n.classList.add("inactive");n.classList.remove("active-node")}});
     n.addEventListener("click",function(){openDrawer(a,"sessions")});
-    domLayer.appendChild(n);
-  });
-
-  // Channel nodes
-  chNodes.forEach(function(ch){
-    var p=uPos[ch.id];if(!p)return;
-    var n=document.createElement("div");
-    n.className="chn";
-    n.style.cssText="position:absolute;left:"+p.x+"px;top:"+p.y+"px;width:"+p.w+"px;height:"+p.h+"px;"
-      +"background:#111827;border:1.5px solid #2a3a4e;border-radius:8px;"
-      +"display:flex;flex-direction:row;align-items:center;justify-content:center;gap:8px;"
-      +"user-select:none;cursor:pointer;padding:0 14px;box-sizing:border-box";
-    n.innerHTML=''
-      +'<svg width="14" height="14" viewBox="0 0 24 24" fill="none">'
-      +'<circle cx="12" cy="7" r="4" fill="#64748b"/>'
-      +'<path d="M4 20c0-4 3.6-7 8-7s8 3 8 7" stroke="#64748b" stroke-width="2" stroke-linecap="round" fill="none"/>'
-      +'</svg>'
-      +'<span class="ch-node-label channel">'+esc(ch.name)+'</span>';
-    n.addEventListener("click",function(){showChannelsPage()});
     domLayer.appendChild(n);
   });
 
@@ -1082,7 +1183,7 @@ function drawRelMap(){
   leg.style.left=legendX+"px";leg.style.top=legendY+"px";
   leg.innerHTML=''
     +'<span class="graph-legend-item"><svg width="20" height="8"><line x1="0" y1="4" x2="16" y2="4" stroke="#7c6cf0" stroke-width="1.5" opacity="0.65"/><polyline points="13,1.5 17,4 13,6.5" fill="none" stroke="#7c6cf0" stroke-width="1.2"/></svg>delegates</span>'
-    +'<span class="graph-legend-item"><svg width="20" height="8"><line x1="0" y1="4" x2="17" y2="4" stroke="#3498db" stroke-width="1" stroke-dasharray="3,3" opacity="0.4"/></svg>channel</span>'
+    +'<span class="graph-legend-item"><svg width="24" height="8"><polyline points="4,1.5 0,4 4,6.5" fill="none" stroke="#7c6cf0" stroke-width="1.2" opacity="0.65"/><line x1="0" y1="4" x2="20" y2="4" stroke="#7c6cf0" stroke-width="1.5" opacity="0.65"/><polyline points="17,1.5 21,4 17,6.5" fill="none" stroke="#7c6cf0" stroke-width="1.2" opacity="0.65"/></svg>mutual</span>'
     +'<span class="graph-legend-item"><svg width="16" height="12"><rect x="1" y="1" width="14" height="10" rx="3" fill="none" stroke="#00bfa5" stroke-width="1.2" stroke-dasharray="3,2" opacity="0.5"/></svg>a2a peers</span>'
     +(infraNodes.length>0?'<span class="graph-legend-item"><svg width="16" height="12"><rect x="1" y="1" width="14" height="10" rx="3" fill="none" stroke="#6a5acd" stroke-width="1.2" stroke-dasharray="3,2" opacity="0.5"/></svg>infra</span>':'');
   domLayer.appendChild(leg);
@@ -1823,9 +1924,9 @@ var CH_ACCOUNT_FIELDS={
 // ── Channels Tab (agent drawer — simplified, just shows bindings for this agent) ──
 function renderChannels(a){
   var bindings=a.bindings||[];
-  var h='<div style="margin-bottom:14px;font-size:13px;color:var(--tx3)">Routing rules for this agent. Manage channels globally from the <a href="#" onclick="event.preventDefault();closeDrawer();showChannelsPage()" style="color:var(--accent)">Channels</a> page.</div>';
+  var h='<div style="margin-bottom:14px;font-size:13px;color:var(--tx3)">Bindings for this agent. Manage channels globally from the <a href="#" onclick="event.preventDefault();closeDrawer();showChannelsPage()" style="color:var(--accent)">Channels</a> page.</div>';
   if(bindings.length===0){
-    h+='<div class="ch-int-empty center">No routing rules for this agent.<br><br><button class="btn btn-accent btn-sm" onclick="closeDrawer();showChannelsPage()">Go to Channels</button></div>';
+    h+='<div class="ch-int-empty center">No bindings for this agent.<br><br><button class="btn btn-accent btn-sm" onclick="closeDrawer();showChannelsPage()">Go to Channels</button></div>';
     return h;
   }
   h+='<div class="flex-col gap-md">';
@@ -2478,7 +2579,7 @@ function addSubagent(id){
   if(subs.indexOf(sel.value)===-1)subs.push(sel.value);
   var patch={subagents:{allowAgents:subs}};
   api("agents/"+encodeURIComponent(id),{method:"PUT",body:JSON.stringify(patch)})
-    .then(function(){toast("Subagent added","ok");_showRestartBanner();_updateAgentLocal(id,patch)}).catch(function(e){toast(e.message,"err")});
+    .then(function(){toast("Subagent added","ok");_updateAgentLocal(id,patch)}).catch(function(e){_updateAgentLocal(id,patch);toast("Subagent added","ok");_reconnectAfterRestart()});
 }
 function removeSubagent(id,subId){
   var a=null;for(var i=0;i<D.agents.length;i++){if(D.agents[i].id===id){a=D.agents[i];break}}
@@ -2486,13 +2587,13 @@ function removeSubagent(id,subId){
   var subs=getSubs(a).filter(function(s){return s!==subId});
   var patch={subagents:{allowAgents:subs}};
   api("agents/"+encodeURIComponent(id),{method:"PUT",body:JSON.stringify(patch)})
-    .then(function(){toast("Subagent removed","ok");_showRestartBanner();_updateAgentLocal(id,patch)}).catch(function(e){toast(e.message,"err")});
+    .then(function(){toast("Subagent removed","ok");_updateAgentLocal(id,patch)}).catch(function(e){_updateAgentLocal(id,patch);toast("Subagent removed","ok");_reconnectAfterRestart()});
 }
 function saveSubagents(id){
   var allowed=V("sub-allow-"+id).split(",").map(function(s){return s.trim()}).filter(Boolean);
   var patch={subagents:{allowAgents:allowed}};
   api("agents/"+encodeURIComponent(id),{method:"PUT",body:JSON.stringify(patch)})
-    .then(function(){toast("Saved","ok");_showRestartBanner();_updateAgentLocal(id,patch)}).catch(function(e){toast(e.message,"err")});
+    .then(function(){toast("Saved","ok");_updateAgentLocal(id,patch)}).catch(function(e){_updateAgentLocal(id,patch);toast("Saved","ok");_reconnectAfterRestart()});
 }
 function addPeer(id){
   var sel=Q("peer-picker-"+id);if(!sel||!sel.value)return;
@@ -2600,100 +2701,127 @@ function renderChannelsPage(){
   var allCh=D.channels||{};
   var chNames=Object.keys(allCh);
   var bindings=D.bindings||[];
-  var agents=D.agents||[];
 
   var h='';
 
-  // Header
   h+='<div class="flex-between mb-lg">';
-  h+='<div class="section-desc">Manage channel accounts and route them to agents.</div>';
+  h+='<div class="section-desc">Manage channel accounts and bind agents to them.</div>';
   h+='<div class="flex-row">';
   h+='<button class="btn btn-sm" onclick="showAddAccountModal()">+ Add Account</button>';
   h+='<button class="btn btn-accent btn-sm" onclick="showAddBindingModal()">+ Add Binding</button>';
   h+='</div></div>';
 
   if(chNames.length===0){
-    h+='<div style="text-align:center;padding:48px;color:var(--tx3);font-size:13px">';
-    h+='<div style="font-size:36px;margin-bottom:12px">📡</div>';
+    h+='<div class="empty">';
+    h+='<div class="empty-icon">📡</div>';
     h+='No channel accounts configured yet.<br><br>';
     h+='<button class="btn btn-accent" onclick="showAddAccountModal()">+ Add your first account</button></div>';
     el.innerHTML=h;return;
   }
 
-  // Card grid
-  h+='<div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(320px,1fr));gap:14px">';
-
+  // Build flat list of account cards across all channels
+  var usedBindingIdx={};
+  h+='<div class="ch-grid">';
   chNames.forEach(function(ch){
     var cfg=allCh[ch]||{};
-    var enabled=cfg.enabled!==false;
+    var chEnabled=cfg.enabled!==false;
     var accs=cfg.accounts?Object.keys(cfg.accounts).filter(function(a){return a!=="default"||Object.keys((cfg.accounts||{})[a]||{}).length>0}):[];
     var chBindings=bindings.filter(function(b){return b.match&&b.match.channel===ch});
-    var borderCol=enabled?"var(--green)":"var(--red)";
 
-    h+='<div style="background:var(--bg2);border:1px solid var(--border);border-top:3px solid '+borderCol+';border-radius:var(--radius);display:flex;flex-direction:column">';
-
-    // Header
-    h+='<div style="display:flex;align-items:center;gap:12px;padding:18px 20px">';
-    h+='<span style="font-size:28px">'+chIcon(ch)+'</span>';
-    h+='<div class="flex-1"><div style="font-size:18px;font-weight:700;text-transform:capitalize">'+esc(ch)+'</div>';
-    h+='<div style="font-size:14px;color:var(--tx3);margin-top:2px">'+accs.length+' account'+(accs.length!==1?"s":"")+' · '+chBindings.length+' binding'+(chBindings.length!==1?"s":"")+'</div>';
-    h+='</div>';
-    h+='<span class="badge '+(enabled?"badge-green":"badge-red")+'" style="cursor:pointer;flex-shrink:0;font-size:13px;padding:4px 12px" onclick="toggleChannelPage(\''+esc(ch)+'\','+(!enabled)+')">'+(enabled?"Online":"Off")+'</span>';
-    h+='</div>';
-
-    // Accounts list
-    if(accs.length>0){
-      h+='<div style="padding:0 20px 14px;display:flex;flex-direction:column;gap:8px">';
-      accs.forEach(function(accName){
-        var accCfg=(cfg.accounts||{})[accName]||{};
-        var accEnabled=accCfg.enabled!==false;
-        var accBindings=chBindings.filter(function(b){return(b.match&&b.match.accountId)===accName});
-        var meta=[];
-        if(accCfg.groupPolicy)meta.push(accCfg.groupPolicy);
-        if(accBindings.length>0)meta.push(accBindings.length+" binding"+(accBindings.length>1?"s":""));
-
-        h+='<div style="display:flex;align-items:center;gap:10px;padding:10px 14px;background:var(--bg3);border-radius:6px;cursor:pointer" onclick="editAccountPage(\''+esc(ch)+'\',\''+esc(accName)+'\')">';
-        h+='<span style="width:8px;height:8px;border-radius:50%;background:'+(accEnabled?"var(--green)":"var(--red)")+';flex-shrink:0"></span>';
-        h+='<span style="font-size:15px;font-weight:600;flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">'+esc(accName)+'</span>';
-        if(meta.length)h+='<span style="font-size:13px;color:var(--tx3);white-space:nowrap">'+meta.join(" · ")+'</span>';
-        h+='</div>';
-
-        // Show bindings inline
-        if(accBindings.length>0){
-          accBindings.forEach(function(b){
-            var aid=b.agentId||"?";
-            var col=agentColor(aid);
-            var aName=aid;for(var i=0;i<agents.length;i++){if(agents[i].id===aid){aName=agents[i].name||aid;break}}
-            var m=b.match||{};
-            var peerLabel=m.peer?(m.peer.kind+":"+m.peer.id):"";
-            var gi=-1;for(var j=0;j<bindings.length;j++){if(bindings[j]===b){gi=j;break}}
-            h+='<div style="display:flex;align-items:center;gap:8px;padding:8px 14px 8px 34px;font-size:15px">';
-            h+='<span class="section-desc">→</span>';
-            h+='<span style="font-weight:600;color:'+col+';font-size:15px">'+esc(aName)+'</span>';
-            if(peerLabel)h+='<span style="color:var(--tx3);font-family:monospace;font-size:var(--fs-sm);max-width:160px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="'+esc(peerLabel)+'">'+esc(peerLabel)+'</span>';
-            h+='<span style="margin-left:auto;display:flex;gap:6px">';
-            h+='<span style="cursor:pointer;color:var(--tx3);opacity:.6;font-size:13px" onclick="event.stopPropagation();showEditBindingModal('+gi+')" title="Edit">✎</span>';
-            h+='<span style="cursor:pointer;color:var(--tx3);opacity:.6;font-size:14px" onclick="event.stopPropagation();removeBindingGlobal('+gi+')" title="Remove">✕</span>';
-            h+='</span></div>';
-          });
-        }
-      });
-      h+='</div>';
+    // If no accounts, show a single channel-level card
+    if(accs.length===0){
+      h+='<div class="ch-card">';
+      h+='<div class="ch-card-head">';
+      h+='<span class="ch-card-icon">'+chIcon(ch)+'</span>';
+      h+='<span class="ch-card-name">'+esc(ch)+'</span>';
+      h+='<div class="ch-card-actions">';
+      h+='<span class="badge '+(chEnabled?"badge-green":"badge-red")+'" style="cursor:pointer" onclick="toggleChannelPage(\''+esc(ch)+'\','+(!chEnabled)+')">'+(chEnabled?"Online":"Off")+'</span>';
+      h+='<button class="btn btn-sm" onclick="editChannelSettings(\''+esc(ch)+'\')">⚙</button>';
+      h+='<button class="btn btn-sm btn-danger" onclick="deleteChannelPage(\''+esc(ch)+'\')">✕</button>';
+      h+='</div></div>';
+      h+='<div class="ch-card-body">';
+      h+='<div class="ch-int-empty center">No accounts configured.<br><br><button class="btn btn-accent btn-sm" onclick="showAddAccountModal(\''+esc(ch)+'\')">+ Add Account</button></div>';
+      h+='</div></div>';
+      return;
     }
 
-    // Actions footer
-    h+='<div style="display:flex;gap:8px;padding:12px 20px;border-top:1px solid var(--border);margin-top:auto">';
-    h+='<button class="btn btn-sm" onclick="showAddAccountModal(\''+esc(ch)+'\')">+ Account</button>';
-    h+='<button class="btn btn-sm" onclick="showAddBindingModal(\''+esc(ch)+'\')">+ Binding</button>';
-    h+='<button class="btn btn-sm" onclick="editChannelSettings(\''+esc(ch)+'\')">⚙</button>';
-    h+='<span class="flex-1"></span>';
-    h+='<button class="btn btn-sm btn-danger" onclick="deleteChannelPage(\''+esc(ch)+'\')">✕</button>';
-    h+='</div>';
+    // One card per account
+    accs.forEach(function(accName){
+      var accCfg=(cfg.accounts||{})[accName]||{};
+      var accEnabled=accCfg.enabled!==false;
+      // Bindings for this specific account (exact match or wildcard)
+      var accBindings=chBindings.filter(function(b){
+        var m=b.match||{};
+        return m.accountId===accName||m.accountId==="*"||(!m.accountId&&!m.peer);
+      });
 
-    h+='</div>'; // end card
+      h+='<div class="ch-card">';
+
+      // Header: channel icon + account name + status
+      h+='<div class="ch-card-head">';
+      h+='<span class="ch-card-icon">'+chIcon(ch)+'</span>';
+      h+='<div class="ch-card-head-info">';
+      h+='<span class="ch-card-name">'+esc(accName)+'</span>';
+      h+='<span class="ch-card-channel-type">'+esc(ch)+'</span>';
+      h+='</div>';
+      h+='<div class="ch-card-actions">';
+      h+='<span class="ch-card-acc-dot" style="background:'+(accEnabled?"var(--green)":"var(--red)")+'"></span>';
+      h+='<span class="badge '+(chEnabled?"badge-green":"badge-red")+'" style="cursor:pointer;font-size:12px" onclick="toggleChannelPage(\''+esc(ch)+'\','+(!chEnabled)+')">'+(chEnabled?"Online":"Off")+'</span>';
+      h+='<button class="btn btn-sm" onclick="editAccountPage(\''+esc(ch)+'\',\''+esc(accName)+'\')">✎</button>';
+      h+='<button class="btn btn-sm" onclick="editChannelSettings(\''+esc(ch)+'\')">⚙</button>';
+      h+='<button class="btn btn-sm btn-danger" onclick="deleteChannelPage(\''+esc(ch)+'\')">✕</button>';
+      h+='</div></div>';
+
+      // Body
+      h+='<div class="ch-card-body">';
+
+      // Account info row
+      if(accCfg.groupPolicy){
+        h+='<div class="ch-card-meta"><span class="ch-card-meta-label">Policy</span> '+esc(accCfg.groupPolicy)+'</div>';
+      }
+
+      // Bindings for this account
+      if(accBindings.length>0){
+        h+='<div>';
+        h+='<div class="ch-card-section-title">Bindings</div>';
+        h+='<div class="flex-col" style="gap:6px">';
+        accBindings.forEach(function(b){
+          var aid=b.agentId||"?";
+          var col=agentColor(aid);
+          var m=b.match||{};
+          var route="";
+          if(m.peer)route=m.peer.kind+": "+m.peer.id;
+          else if(m.accountId==="*")route="wildcard";
+          else if(m.accountId)route="channel: "+(m.channel_id||m.guildId||m.teamId||"");
+          // Find global index
+          var gi=-1;for(var j=0;j<bindings.length;j++){if(bindings[j]===b){gi=j;usedBindingIdx[gi]=true;break}}
+
+          h+='<div class="ch-card-binding" onclick="showEditBindingModal('+gi+')" style="cursor:pointer">';
+          h+='<span class="ch-card-binding-arrow">→</span>';
+          h+='<span class="ch-card-binding-agent" style="color:'+col+'">'+esc(aid)+'</span>';
+          h+='<span class="ch-card-binding-route">'+esc(route)+'</span>';
+          h+='<span class="ch-card-binding-actions">';
+          h+='<span onclick="event.stopPropagation();showEditBindingModal('+gi+')" title="Edit">✎</span>';
+          h+='<span onclick="event.stopPropagation();removeBindingGlobal('+gi+')" title="Remove">✕</span>';
+          h+='</span></div>';
+        });
+        h+='</div></div>';
+      }else{
+        h+='<div class="ch-int-empty">No bindings for this account.</div>';
+      }
+
+      h+='</div>'; // end body
+
+      // Footer
+      h+='<div class="ch-card-footer">';
+      h+='<button class="btn btn-sm" onclick="showAddBindingModal(\''+esc(ch)+'\')">+ Binding</button>';
+      h+='</div>';
+
+      h+='</div>'; // end card
+    });
   });
-
   h+='</div>'; // end grid
+
   el.innerHTML=h;
 }
 
@@ -2701,7 +2829,7 @@ function toggleChannelPage(name,enabled){
   api("channels/"+encodeURIComponent(name),{method:"PUT",body:JSON.stringify({enabled:enabled})}).then(function(){_showRestartBanner();setTimeout(renderChannelsPage,300)}).catch(function(e){toast(e.message,"err")});
 }
 function deleteChannelPage(name){
-  if(!confirm("Remove channel "+name+" and all its routing rules?"))return;
+  if(!confirm("Remove channel "+name+" and all its bindings?"))return;
   // Also remove bindings for this channel
   var remaining=(D.bindings||[]).filter(function(b){return!(b.match&&b.match.channel===name)});
   api("channels/"+encodeURIComponent(name),{method:"DELETE"}).then(function(){
@@ -5088,7 +5216,6 @@ function _loadApiStatusInto(targetEl){
       h+='<div class="flex-row flex-shrink-0">';
       if(c.envVar)h+='<button class="btn btn-sm" onclick="editApiKey(\''+esc(c.envVar)+'\',\''+esc(c.name)+'\')" title="View / Edit key">✎</button>';
       if(c.billingUrl)h+='<a href="'+c.billingUrl+'" target="_blank" class="btn btn-sm" style="padding:5px 14px;font-size:13px;text-decoration:none" title="Billing dashboard">💳</a>';
-      if(c.envVar)h+='<button class="btn btn-sm" onclick="editApiKey(\''+esc(c.envVar)+'\',\''+esc(c.name)+'\')" title="Edit key">✎</button>';
       if(c.isOAuth)h+='<button class="btn btn-sm" onclick="refreshAuthToken(\''+esc(c.profileKey)+'\',\''+esc(c.name)+'\')" title="Refresh token">↻</button>';
       if(c.isOAuth||c.profileKey)h+='<button class="btn btn-sm btn-danger" onclick="removeAuthProfile(\''+esc(c.profileKey)+'\',\''+esc(c.source)+'\',\''+esc(c.name)+'\')" title="Remove">✕</button>';
       else if(c.envVar)h+='<button class="btn btn-sm btn-danger" onclick="removeEnvKey(\''+esc(c.envVar)+'\',\''+esc(c.name)+'\')" title="Remove key">✕</button>';
