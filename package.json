@@ -1,12 +1,11 @@
 {
     "name": "openclaw-agent-command-center",
-    "description": "Single-pane-of-glass dashboard for managing your OpenClaw AI agent ecosystem — agents, sessions, models, channels, tasks, and configuration.",
+    "description": "Comprehensive agent management dashboard plugin for OpenClaw",
     "version": "1.0.0",
     "type": "module",
-    "description": "Comprehensive agent management dashboard plugin for OpenClaw",
-    "main": "./dist/index.js",
+    "main": "./dist/server/index.js",
     "exports": {
-        ".": "./dist/index.js"
+        ".": "./dist/server/index.js"
     },
     "scripts": {
         "build": "tsc",
@@ -15,16 +14,17 @@
     },
     "openclaw": {
         "extensions": [
-            "./dist/index.js"
+            "./dist/server/index.js"
         ]
     },
     "peerDependencies": {
         "openclaw": "*"
     },
     "devDependencies": {
+        "@types/node": "^22.0.0",
+        "fast-check": "^4.6.0",
         "typescript": "^5.7.0",
-        "vitest": "^3.0.0",
-        "@types/node": "^22.0.0"
+        "vitest": "^3.0.0"
     },
     "license": "MIT"
 }

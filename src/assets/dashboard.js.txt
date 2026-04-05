@@ -3,6 +3,8 @@ var mapScale=1,mapOffX=0,mapOffY=0,panStart=null;
 var AGENT_COLORS=["#7c6cf0","#00d68f","#ff4757","#ffaa00","#3498db","#e056a0","#00bcd4","#8bc34a","#ff7043","#ab47bc"];
 var drawerAgent=null,drawerTab="sessions";
 var openFileIds={};
+var _orchFlow=null; // { name, description, steps: [{id, agentId, description, humanIntervention}] }
+var _orchFlowLoadedFor=null; // agentId whose flow has been loaded (avoids re-fetching on every tab switch)
 
 // Mobile nav
 function openMobileNav(){
@@ -376,11 +378,11 @@ function getModelVal(id){
 // ── Graph caching layer ──
 // Fingerprint agents+bindings+channels so we skip expensive graph re-render when nothing changed.
 var _graphFingerprint="";
-var _GRAPH_VERSION="v24"; // bump to invalidate localStorage graph cache after code changes
+var _GRAPH_VERSION="v25"; // bump to invalidate localStorage graph cache after code changes
 function _computeGraphFingerprint(agents,bindings){
   // Deterministic JSON of the fields that affect the graph layout
   var data=_GRAPH_VERSION+JSON.stringify({
-    a:(agents||[]).map(function(a){return{id:a.id,name:a.name,icon:a.icon,"default":a["default"],model:a.model,hb:a.heartbeat,subs:getSubs(a),peers:getPeers(a)}}),
+    a:(agents||[]).map(function(a){return{id:a.id,name:a.name,icon:a.icon,"default":a["default"],model:a.model,hb:a.heartbeat,subs:getSubs(a),peers:getPeers(a),orch:getToolAlso(a).indexOf("run_task_flow")>-1}}),
     b:(bindings||[]).map(function(b){return{agentId:b.agentId,channel:b.match&&b.match.channel}})
   });
   // Simple djb2 hash — fast, good enough for change detection
@@ -1139,7 +1141,7 @@ function drawRelMap(){
       +"user-select:none;transition:box-shadow .15s,border-color .15s;padding:8px 14px;box-sizing:border-box";
     var model=getModel(a);
     var hb=a.heartbeat||{};
-    var html='<div class="rn-icon">'+agentIcon(a)+'</div>'
+    var html='<div class="rn-icon">'+(getToolAlso(a).indexOf("run_task_flow")>-1?'<span class="rn-crown">👑</span>':'')+agentIcon(a)+'</div>'
       +'<div class="rn-name">'+esc(a.name||a.id)+'</div>';
     if(model)html+='<div class="rn-model">'+esc(model)+'</div>';
     if(hb.every)html+='<div class="rn-heartbeat">♡ '+esc(hb.every)+(hb.model?' · '+esc(hb.model):'')+'</div>';
@@ -1196,6 +1198,11 @@ function drawRelMap(){
 
 // ── Agent Drawer ──
 function openDrawer(a,tab){
+  // Reset orchestrator flow state when switching to a different agent
+  if(!drawerAgent||drawerAgent.id!==a.id){
+    _orchFlow=null;
+    _orchFlowLoadedFor=null;
+  }
   drawerAgent=a;drawerTab=tab||"identity";
   var dr=Q("agent-drawer");
   var bk=Q("drawer-backdrop");
@@ -1238,7 +1245,7 @@ function renderDrawer(){
   if(!drawerAgent)return;
   var a=drawerAgent;
   var col=agentColor(a.id);
-  var tabs=["sessions","identity","files","tools","channels","relationships","danger"];
+  var tabs=["sessions","identity","files","tools","channels","relationships","orchestrator","danger"];
 
   // ── Main panel only (no minimap) ──
   var main=Q("drawer-main");
@@ -1268,6 +1275,10 @@ function switchDrawerTab(tab){
   }
   var db=Q("drawer-body");
   if(db&&drawerAgent)db.innerHTML=renderTab(drawerAgent,tab);
+  // Load existing flow definition when opening orchestrator tab
+  if(tab==="orchestrator"&&drawerAgent){
+    _loadOrchFlowForAgent(drawerAgent.id);
+  }
 }
 
 function renderTab(a,tab){
@@ -1279,6 +1290,7 @@ function renderTab(a,tab){
     case "sessions":return renderSessions(a);
     case "subagents":return renderSubagents(a);
     case "relationships":return renderSubagents(a);
+    case "orchestrator":return renderOrchestrator(a);
     case "danger":return renderDanger(a);
     default:return"";
   }
@@ -2712,6 +2724,385 @@ function fixA2AHeartbeat(agentId){
     _showRestartBanner();
     if(drawerAgent&&drawerAgent.id===agentId)renderDrawer();
   }).catch(function(e){toast("Failed: "+e.message,"err")});
+}
+
+// ── Orchestrator Tab ──
+var _orchFlowLoadedFromServer=false;
+function _loadOrchFlowForAgent(agentId){
+  // Only fetch once per agent — skip if already loaded for this agent
+  if(_orchFlowLoadedFor===agentId)return;
+  _orchFlowLoadedFor=agentId;
+  _orchFlowLoadedFromServer=false;
+  api("tasks/flows/definition/"+encodeURIComponent(agentId),{_quiet:true}).then(function(r){
+    // Only apply if we're still on the orchestrator tab for the same agent
+    if(!drawerAgent||drawerAgent.id!==agentId||drawerTab!=="orchestrator")return;
+    if(r.flow){
+      _orchFlow={
+        name:r.flow.name||"",
+        description:r.flow.description||"",
+        steps:(r.flow.steps||[]).map(function(s){
+          return{id:s.id||"",agentId:s.agentId||"",description:s.description||"",humanIntervention:!!s.humanIntervention};
+        })
+      };
+      _orchFlowLoadedFromServer=true;
+    }else{
+      _orchFlow={name:"",description:"",steps:[]};
+      _orchFlowLoadedFromServer=false;
+    }
+    // Re-render the orchestrator tab with the loaded data
+    var db=Q("drawer-body");
+    if(db&&drawerAgent&&drawerTab==="orchestrator"){
+      db.innerHTML=renderOrchestrator(drawerAgent);
+    }
+  }).catch(function(){
+    // On error, just keep the empty state — don't block the user
+    if(!drawerAgent||drawerAgent.id!==agentId||drawerTab!=="orchestrator")return;
+    if(!_orchFlow){
+      _orchFlow={name:"",description:"",steps:[]};
+    }
+  });
+}
+function renderOrchestrator(a){
+  if(!_orchFlow){
+    _orchFlow={name:"",description:"",steps:[]};
+  }
+  var f=_orchFlow;
+  var h='<div class="orch-editor">';
+  // Info section explaining Task Flows
+  h+='<div class="orch-info-box">';
+  h+='<div class="orch-info-title">🔄 Agents Orchestration</div>';
+  h+='<div class="orch-info-summary">Task Flows let you define multi-step agent pipelines that execute sequentially — each step delegates to a specific agent, and approval gates can pause the flow for human review before proceeding.</div>';
+  h+='<details class="orch-info-details"><summary>How it works &amp; prerequisites</summary>';
+  h+='<div class="orch-info-body">';
+  h+='<p><strong>How it works:</strong> Define a flow with named steps. Each step targets a specific agent. When you save, the dashboard generates a <code>.flow.ts</code> file and registers the <code>run_task_flow</code> tool in the orchestrating agent\'s config.</p>';
+  h+='<p><strong>Execution model:</strong> The orchestrator calls <code>run_task_flow</code> with <code>action=&quot;run&quot;</code> to start a flow. The tool returns one step at a time. After executing each step via <code>sessions_spawn</code>, the agent calls <code>action=&quot;step_complete&quot;</code> to advance. Steps marked "Pause for approval" trigger an <code>action=&quot;resume&quot;</code> gate — the flow waits until a human approves or denies from the dashboard or chat.</p>';
+  h+='<p><strong>Prerequisites:</strong></p>';
+  h+='<ul style="margin:6px 0 6px 18px;color:var(--tx2);font-size:var(--fs-sm)">';
+  h+='<li>The orchestrating agent must have <code>run_task_flow</code> in its <code>tools.alsoAllow</code> list (auto-added on save)</li>';
+  h+='<li>Target agents referenced in steps must be configured as subagents of the orchestrator</li>';
+  h+='<li>Paste the generated AGENTS.md snippet into your orchestrator\'s workspace file so it knows when and how to invoke the flow</li>';
+  h+='<li>Restart the gateway after saving so the tool becomes available</li>';
+  h+='</ul>';
+  h+='<p><strong>State machine:</strong> <code>run</code> → execute step → <code>step_complete</code> → (next step | approval gate | completed)</p>';
+  h+='</div></details>';
+  h+='</div>';
+  h+='<div class="fg">'+tip("Flow Name","A valid identifier (letters, numbers, underscores). Used to derive file names for the flow definition.")
+    +'<input id="orch-name" value="'+esc(f.name)+'" placeholder="e.g. coding_pipeline" oninput="onOrchNameInput()" required />'
+    +'<div id="orch-name-error" class="val-err" style="display:none"></div></div>';
+  h+='<div class="fg">'+tip("Flow Description","Optional description used as the flow goal.")
+    +'<textarea id="orch-desc" rows="2" placeholder="Describe what this flow does…">'+esc(f.description)+'</textarea></div>';
+  h+='<div class="orch-steps-header"><strong>Steps</strong></div>';
+  h+='<div id="orch-step-list">';
+  if(f.steps.length===0){
+    h+='<div class="empty orch-empty">No steps yet. Click "Add Step" to begin.</div>';
+  }else{
+    var agents=D.agents||[];
+    f.steps.forEach(function(step,i){
+      var isFirst=i===0;
+      var isLast=i===f.steps.length-1;
+      h+='<div class="orch-step" data-step-index="'+i+'">';
+      h+='<div class="orch-step-num">'+(i+1)+'</div>';
+      h+='<div class="orch-step-body">';
+      // Row 1: Step name + Agent on same line
+      h+='<div class="orch-step-top-row">';
+      h+='<div class="orch-step-field orch-step-name-field"><label class="lbl">Step Name</label>';
+      h+='<input id="orch-step-id-'+i+'" class="orch-step-input" value="'+esc(step.id)+'" placeholder="e.g. review_code" oninput="onOrchStepChange('+i+',\'id\',this.value)" /></div>';
+      h+='<div class="orch-step-field orch-step-agent-field"><label class="lbl">Run by</label>';
+      h+='<select id="orch-step-agent-'+i+'" class="orch-step-input" onchange="onOrchStepChange('+i+',\'agentId\',this.value)">';
+      h+='<option value="">Select agent…</option>';
+      agents.forEach(function(ag){
+        h+='<option value="'+esc(ag.id)+'"'+(step.agentId===ag.id?' selected':'')+'>'+esc(ag.name||ag.id)+'</option>';
+      });
+      h+='</select></div>';
+      h+='</div>';
+      // Row 2: Description (textarea for multi-line)
+      h+='<div class="orch-step-row"><label class="lbl">Instructions</label>';
+      h+='<textarea id="orch-step-desc-'+i+'" class="orch-step-input orch-step-desc-ta" rows="2" placeholder="What should this agent do in this step?" oninput="onOrchStepChange('+i+',\'description\',this.value)">'+esc(step.description)+'</textarea></div>';
+      // Row 3: Approval gate toggle (compact)
+      h+='<div class="orch-step-footer">';
+      h+='<label class="orch-approval-toggle"><input type="checkbox" id="orch-step-hi-'+i+'"'+(step.humanIntervention?' checked':'')+' onchange="onOrchStepChange('+i+',\'humanIntervention\',this.checked)" />';
+      h+=' Pause for approval';
+      if(step.humanIntervention) h+=' <span class="orch-hi-badge">⏸</span>';
+      h+='</label>';
+      h+='</div>';
+      h+='</div>'; // end orch-step-body
+      // Controls: move up, move down, remove
+      h+='<div class="orch-step-controls">';
+      h+='<button class="btn btn-sm orch-move-btn" onclick="moveOrchStepUp('+i+')"'+(isFirst?' disabled':'')+' title="Move up">▲</button>';
+      h+='<button class="btn btn-sm orch-move-btn" onclick="moveOrchStepDown('+i+')"'+(isLast?' disabled':'')+' title="Move down">▼</button>';
+      h+='<button class="btn btn-sm btn-danger orch-remove-btn" onclick="removeOrchStep('+i+')" title="Remove step">✕</button>';
+      h+='</div>';
+      h+='</div>'; // end orch-step
+    });
+  }
+  h+='</div>';
+  h+='<div class="orch-actions">';
+  h+='<button class="btn btn-sm" onclick="addOrchStep()">+ Add Step</button>';
+  h+='<button class="btn btn-sm btn-accent" onclick="saveOrchFlow(\''+esc(a.id)+'\')">Save</button>';
+  if(_orchFlowLoadedFromServer&&f.name){
+    h+='<button class="btn btn-sm btn-danger" onclick="deleteOrchFlow(\''+esc(a.id)+'\',\''+esc(f.name)+'\')">Delete Flow</button>';
+  }
+  h+='</div>';
+
+  // Persistent setup checklist when a flow is configured
+  if(_orchFlowLoadedFromServer&&f.name){
+    h+=_renderSetupChecklist(a,f);
+  }
+
+  h+='</div>';
+  return h;
+}
+function onOrchNameInput(){
+  var val=V("orch-name").trim();
+  _orchFlow.name=val;
+  // Inline validation
+  var errEl=Q("orch-name-error");
+  if(errEl){
+    if(val&&!/^[a-zA-Z][a-zA-Z0-9_]*$/.test(val)){
+      errEl.textContent="Flow name must start with a letter and contain only letters, numbers, and underscores.";
+      errEl.style.display="";
+    }else{
+      errEl.textContent="";
+      errEl.style.display="none";
+    }
+  }
+}
+function addOrchStep(){
+  if(!_orchFlow)_orchFlow={name:"",description:"",steps:[]};
+  _orchFlow.steps.push({id:"",agentId:"",description:"",humanIntervention:false});
+  var newIdx=_orchFlow.steps.length-1;
+  if(drawerAgent)switchDrawerTab("orchestrator");
+  setTimeout(function(){
+    var inp=Q("orch-step-id-"+newIdx);
+    if(inp)inp.focus();
+  },0);
+}
+function removeOrchStep(index){
+  if(!_orchFlow||!_orchFlow.steps)return;
+  _orchFlow.steps.splice(index,1);
+  if(drawerAgent)switchDrawerTab("orchestrator");
+}
+function moveOrchStepUp(index){
+  if(!_orchFlow||index<=0)return;
+  var steps=_orchFlow.steps;
+  var tmp=steps[index];
+  steps[index]=steps[index-1];
+  steps[index-1]=tmp;
+  if(drawerAgent)switchDrawerTab("orchestrator");
+}
+function moveOrchStepDown(index){
+  if(!_orchFlow)return;
+  var steps=_orchFlow.steps;
+  if(index>=steps.length-1)return;
+  var tmp=steps[index];
+  steps[index]=steps[index+1];
+  steps[index+1]=tmp;
+  if(drawerAgent)switchDrawerTab("orchestrator");
+}
+function onOrchStepChange(index,field,value){
+  if(!_orchFlow||!_orchFlow.steps[index])return;
+  _orchFlow.steps[index][field]=value;
+  // Re-render only for humanIntervention to update badge immediately
+  if(field==="humanIntervention"&&drawerAgent)switchDrawerTab("orchestrator");
+}
+
+// ── Save Orchestrator Flow ──
+function saveOrchFlow(agentId){
+  if(!_orchFlow)return;
+  var f=_orchFlow;
+  var name=f.name.trim();
+  var desc=(Q("orch-desc")?V("orch-desc"):"").trim();
+  f.description=desc;
+
+  // Client-side validation
+  if(!name){toast("Flow name is required","err");return}
+  if(!/^[a-zA-Z][a-zA-Z0-9_]*$/.test(name)){toast("Flow name must start with a letter and contain only letters, numbers, and underscores","err");return}
+  if(!f.steps||f.steps.length===0){toast("At least one step is required","err");return}
+  var seenIds={};
+  for(var i=0;i<f.steps.length;i++){
+    var s=f.steps[i];
+    if(!s.id||!s.id.trim()){toast("Step "+(i+1)+" is missing a step ID","err");return}
+    if(!s.agentId||!s.agentId.trim()){toast("Step "+(i+1)+" is missing a target agent","err");return}
+    var sid=s.id.trim();
+    if(seenIds[sid]){toast("Duplicate step id: "+sid,"err");return}
+    seenIds[sid]=true;
+  }
+
+  var toolId="run_task_flow";
+  var flowDef={name:name,description:desc,agentId:agentId,steps:f.steps.map(function(s){return{id:s.id.trim(),agentId:s.agentId.trim(),description:(s.description||"").trim(),humanIntervention:!!s.humanIntervention}})};
+
+  // Step 1: Save flow files (server auto-adds run_task_flow to agent's alsoAllow)
+  var isUpdate=!!_orchFlowLoadedFromServer;
+  api("tasks/flows/save",{method:"POST",body:JSON.stringify({flow:flowDef,overwrite:isUpdate})})
+    .then(function(r){
+      if(r.error){toast(r.error,"err");return}
+      _onOrchSaveSuccess(agentId,toolId,flowDef);
+      // Silently refresh agent's alsoAllow without re-rendering the drawer
+      api("agents/"+encodeURIComponent(agentId)).then(function(agentData){
+        if(agentData&&!agentData.error){
+          for(var i=0;i<D.agents.length;i++){
+            if(D.agents[i].id===agentId){
+              if(agentData.tools)D.agents[i].tools=agentData.tools;
+              if(drawerAgent&&drawerAgent.id===agentId)drawerAgent=D.agents[i];
+              break;
+            }
+          }
+        }
+      }).catch(function(){});
+    })
+    .catch(function(e){
+      toast(e.message||"Failed to save flow","err");
+    });
+}
+
+function _onOrchSaveSuccess(agentId,toolId,flowDef){
+  _orchFlowLoadedFromServer=true;
+  toast("Task flow saved","ok");
+  _showRestartBanner();
+  // Re-render to show persistent checklist
+  var db=Q("drawer-body");
+  if(db&&drawerAgent&&drawerTab==="orchestrator"){
+    db.innerHTML=renderOrchestrator(drawerAgent);
+    var cl=document.querySelector(".orch-setup-checklist");
+    if(cl)cl.scrollIntoView({behavior:"smooth"});
+  }
+}
+
+// ── Delete Flow ──
+function deleteOrchFlow(agentId,flowName){
+  if(!confirm("Delete the task flow \""+flowName+"\"? This will remove the flow definition and disable the run_task_flow tool for this agent."))return;
+  api("tasks/flows/definition/"+encodeURIComponent(agentId)+"/"+encodeURIComponent(flowName),{method:"DELETE"})
+    .then(function(r){
+      if(r.error){toast(r.error,"err");return}
+      toast("Flow deleted","ok");
+      _orchFlow={name:"",description:"",steps:[]};
+      _orchFlowLoadedFromServer=false;
+      _orchFlowLoadedFor=null;
+      // Re-render the orchestrator tab
+      var db=Q("drawer-body");
+      if(db&&drawerAgent&&drawerTab==="orchestrator"){
+        db.innerHTML=renderOrchestrator(drawerAgent);
+      }
+      // Refresh agent data to reflect alsoAllow change
+      api("agents/"+encodeURIComponent(agentId)).then(function(agentData){
+        if(agentData&&!agentData.error){
+          for(var i=0;i<D.agents.length;i++){
+            if(D.agents[i].id===agentId){
+              if(agentData.tools)D.agents[i].tools=agentData.tools;
+              if(drawerAgent&&drawerAgent.id===agentId)drawerAgent=D.agents[i];
+              break;
+            }
+          }
+        }
+      }).catch(function(){});
+    })
+    .catch(function(e){toast(e.message||"Failed to delete flow","err")});
+}
+
+// ── Setup Checklist (inline HTML renderer) ──
+function _renderSetupChecklist(a,f){
+  var also=getToolAlso(a||{});
+  var hasRunTaskFlow=also.indexOf("run_task_flow")>-1;
+  var subagentConfig=(a&&a.subagents)||{};
+  var allowAgents=subagentConfig.allowAgents||[];
+  var uniqueStepAgents=[];
+  (f.steps||[]).forEach(function(s){if(s.agentId&&uniqueStepAgents.indexOf(s.agentId)<0)uniqueStepAgents.push(s.agentId)});
+  var missingAgents=uniqueStepAgents.filter(function(sa){return allowAgents.indexOf("*")<0&&allowAgents.indexOf(sa)<0});
+  var hasAllAgents=allowAgents.indexOf("*")>-1||missingAgents.length===0;
+  var h='<div class="orch-setup-checklist">';
+  h+='<div class="orch-setup-header">Setup Checklist</div>';
+  h+='<div class="orch-setup-body">';
+  h+='<div class="orch-setup-item '+(hasRunTaskFlow?"done":"")+'">'
+    +'<span class="orch-setup-icon">'+(hasRunTaskFlow?"✅":"⚠️")+'</span>'
+    +(hasRunTaskFlow
+      ?'<span>The <code>run_task_flow</code> tool is enabled for this agent.</span>'
+      :'<span>Add <code>run_task_flow</code> to this agent\'s <code>tools.alsoAllow</code>.</span>')
+    +'</div>';
+  h+='<div class="orch-setup-item '+(hasAllAgents?"done":"")+'">'
+    +'<span class="orch-setup-icon">'+(hasAllAgents?"✅":"⚠️")+'</span>'
+    +(hasAllAgents
+      ?'<span>Subagent relationships are configured — this agent can delegate to the step agents.</span>'
+      :'<span>Add these agents to <code>subagents.allowAgents</code>: <code>'+esc(missingAgents.join(", "))+'</code></span>')
+    +'</div>';
+  h+='<div class="orch-setup-item"><span class="orch-setup-icon">📝</span>'
+    +'<span>Ensure this agent\'s <strong>AGENTS.md</strong> has workflow instructions to call <code>run_task_flow</code> with <code>flowName: '+esc(f.name)+'</code>.</span></div>';
+  h+='<div class="orch-setup-snippet-section">'
+    +'<button class="btn btn-accent btn-sm" onclick="_generateAndShowSnippet(\''+esc(a.id)+'\')">Generate AGENTS.md Snippet</button>'
+    +'<div id="agentsmd-snippet-area"></div></div>';
+  h+='</div></div>';
+  return h;
+}
+
+function _generateAndShowSnippet(agentId){
+  if(!_orchFlow)return;
+  var snippet=_generateAgentsMdSnippetClient(_orchFlow);
+  var area=Q("agentsmd-snippet-area");
+  if(!area)return;
+  area.innerHTML='<textarea id="agentsmd-snippet-text" class="orch-snippet-textarea" rows="16" readonly>'+esc(snippet)+'</textarea>'
+    +'<button class="btn btn-sm" onclick="_copyAgentsMdSnippet()">📋 Copy</button>';
+}
+
+function _copyAgentsMdSnippet(){
+  var ta=Q("agentsmd-snippet-text");
+  if(!ta)return;
+  if(navigator.clipboard&&navigator.clipboard.writeText){
+    navigator.clipboard.writeText(ta.value).then(function(){
+      toast("Snippet copied to clipboard","ok");
+    }).catch(function(){
+      toast("Failed to copy — please copy manually","err");
+    });
+  }else{
+    ta.select();
+    try{document.execCommand("copy");toast("Snippet copied to clipboard","ok")}
+    catch(e){toast("Failed to copy — please copy manually","err")}
+  }
+}
+
+function _generateAgentsMdSnippetClient(flow){
+  var toolName="run_task_flow";
+  var lines=[];
+  lines.push("# Workflow policy");
+  lines.push("");
+  lines.push("You are a coordination agent, not an implementation agent.");
+  lines.push("");
+  lines.push("For requests that match this workflow:");
+  lines.push("- Do not perform the work yourself.");
+  lines.push("- Call the `"+toolName+"` tool.");
+  lines.push("- Pass:");
+  lines.push("  - flowName: `"+flow.name+"`");
+  lines.push("  - task summary");
+  lines.push("");
+  lines.push("Execution policy:");
+  for(var i=0;i<flow.steps.length;i++){
+    var step=flow.steps[i];
+    var num=i+1;
+    var line=num+". "+step.id+" (agent: "+step.agentId+")";
+    if(step.description)line+=" — "+step.description;
+    if(step.humanIntervention)line+=" [requires human approval]";
+    lines.push(line);
+  }
+  lines.push("");
+  lines.push("Approval policy:");
+  var humanSteps=flow.steps.filter(function(s){return s.humanIntervention});
+  if(humanSteps.length>0){
+    lines.push("- Steps requiring human approval: "+humanSteps.map(function(s){return s.id}).join(", ")+".");
+    lines.push("- When approval is required, the workflow must pause and wait rather than proceeding.");
+  }else{
+    lines.push("- No steps currently require human approval.");
+  }
+  lines.push("- Any destructive change, production deployment, secret rotation, infrastructure mutation, or irreversible action requires explicit user approval.");
+  lines.push("");
+  lines.push("Your responsibilities:");
+  lines.push("- classify the request");
+  lines.push("- start the workflow");
+  lines.push("- surface failures or approval requests");
+  lines.push("- summarize final outputs");
+  lines.push("");
+  lines.push("You must not:");
+  lines.push("- implement work directly when the workflow applies");
+  lines.push("- skip any flow steps");
+  lines.push("- bypass approval gates");
+  return lines.join("\n");
 }
 
 // ── Danger Tab ──
@@ -4758,6 +5149,7 @@ function _hideModelLimitBanner(){
 var _tasksCache=[];
 var _calView="month"; // list | week | month | year
 var _calAnchor=null;  // Date anchor (start of current period)
+var _tasksSection="flows"; // "scheduled" | "flows" — top-level tab
 
 // Parse interval string → ms. Supports: 30s, 5m, 2h, 1d, 7d, 1w, 2w, 1mo, 1y
 function parseInterval(s){
@@ -4819,16 +5211,39 @@ function calAdvance(view, anchor, dir){
 var MONTHS=["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
 var DAYS=["Sun","Mon","Tue","Wed","Thu","Fri","Sat"];
 
+var _workflowExecsCache=[];
+var _pendingFlowsCache=[];
+var _expandedFlowId=null;
+
 function showTasksPage(){
   if(!_calAnchor)_calAnchor=new Date();
-  openPagePanel("📋 Recurring Tasks",
+  openPagePanel("📋 Tasks",
     '<div id="tasks-body"><div class="loading-center"><span class="spin"></span> Loading…</div></div>');
+  var loaded={tasks:false,flows:false,pending:false};
+  function checkRender(){if(loaded.tasks&&loaded.flows&&loaded.pending)renderTasksPanel();}
   api("tasks").then(function(d){
     _tasksCache=d.tasks||[];
     _heartbeatsCache=d.heartbeats||[];
-    renderTasksPanel();
-  }).catch(function(e){
-    var el=Q("tasks-body");if(el)el.innerHTML='<div class="health-err" style="padding:20px">'+esc(e.message)+'</div>';
+    loaded.tasks=true;checkRender();
+  }).catch(function(){
+    _tasksCache=[];_heartbeatsCache=[];
+    loaded.tasks=true;checkRender();
+  });
+  api("tasks/flows").then(function(d){
+    _workflowExecsCache=d.flows||d.executions||[];
+    if(!Array.isArray(_workflowExecsCache))_workflowExecsCache=[];
+    loaded.flows=true;checkRender();
+  }).catch(function(){
+    _workflowExecsCache=[];
+    loaded.flows=true;checkRender();
+  });
+  api("tasks/flows/pending").then(function(d){
+    _pendingFlowsCache=d.pending||[];
+    if(!Array.isArray(_pendingFlowsCache))_pendingFlowsCache=[];
+    loaded.pending=true;checkRender();
+  }).catch(function(){
+    _pendingFlowsCache=[];
+    loaded.pending=true;checkRender();
   });
 }
 
@@ -4838,8 +5253,137 @@ function renderTasksPanel(){
   var tasks=_tasksCache;
   var el=Q("tasks-body");if(!el)return;
 
-  // ── Tab bar + nav ──
-  var h='<div class="tasks-tabbar">';
+  // ── Top-level section tabs: Flows | Scheduled ──
+  var h='<div class="tasks-section-tabs">';
+  h+='<div class="tasks-section-tab'+(_tasksSection==="flows"?" active":"")+'" onclick="switchTasksSection(\'flows\')">🔄 Flows</div>';
+  h+='<div class="tasks-section-tab'+(_tasksSection==="scheduled"?" active":"")+'" onclick="switchTasksSection(\'scheduled\')">📅 Scheduled</div>';
+  h+='</div>';
+
+  if(_tasksSection==="flows"){
+    h+=renderFlowsSection();
+  }else{
+    h+=renderScheduledSection(tasks);
+  }
+
+  el.innerHTML=h;
+}
+
+function switchTasksSection(s){_tasksSection=s;renderTasksPanel();}
+
+// ── Flows Section ──
+function renderFlowsSection(){
+  var h='';
+
+  // Pending approvals
+  if(_pendingFlowsCache.length>0){
+    h+='<div class="tasks-subsection">';
+    h+='<div class="tasks-subsection-header" style="display:flex;align-items:center;justify-content:space-between">⏸ Pending Approvals';
+    h+='<button class="btn btn-sm btn-danger" onclick="clearAllPendingFlows()">Clear All Pending</button>';
+    h+='</div>';
+    h+='<div class="flex-col gap-sm">';
+    _pendingFlowsCache.forEach(function(p){
+      h+='<div class="pending-approval-card">';
+      h+='<div class="pending-approval-body">';
+      h+='<div class="pending-approval-title">'+esc(p.flowName)+' — step <strong>'+esc(p.waitingAtStepId)+'</strong></div>';
+      h+='<div class="pending-approval-meta">';
+      h+='<span>Task: '+esc(p.task)+'</span>';
+      h+='<span>Since: '+esc(fmtDate(p.createdAt))+'</span>';
+      h+='<span>Completed: '+esc((p.completedStepIds||[]).join(" → ")||"(none)")+'</span>';
+      h+='</div>';
+      h+='</div>';
+      h+='<div class="pending-approval-actions">';
+      h+='<button class="btn btn-sm btn-accent" onclick="dashboardApproveFlow(\''+esc(p.token||p.resumeToken)+'\',true)">✓ Approve</button>';
+      h+='<button class="btn btn-sm btn-danger" onclick="dashboardApproveFlow(\''+esc(p.token||p.resumeToken)+'\',false)">✕ Deny</button>';
+      h+='</div>';
+      h+='</div>';
+    });
+    h+='</div></div>';
+  }
+
+  // Workflow executions
+  h+='<div class="tasks-subsection">';
+  h+='<div class="tasks-subsection-header" style="display:flex;align-items:center;justify-content:space-between">Execution History';
+  var execs=_workflowExecsCache;
+  // Count deletable (non-running) stuck/waiting/failed executions
+  var stuckCount=0;
+  if(execs&&execs.length>0){
+    stuckCount=execs.filter(function(ex){return ex.state==="waiting"||ex.state==="failed"}).length;
+  }
+  if(stuckCount>0){
+    h+='<button class="btn btn-sm btn-danger" onclick="deleteAllStuckExecs()">Delete All Stuck/Failed ('+stuckCount+')</button>';
+  }
+  h+='</div>';
+  if(!execs||execs.length===0){
+    h+='<div class="tasks-empty"><div class="tasks-empty-icon">🔄</div>No workflow executions yet</div>';
+  }else{
+    var sorted=_sortExecs(execs);
+    h+='<div class="flex-col gap-sm">';
+    sorted.forEach(function(ex){h+=renderExecCard(ex)});
+    h+='</div>';
+  }
+  h+='</div>';
+  return h;
+}
+
+function dashboardApproveFlow(token,approve){
+  if(!approve){
+    if(!confirm("Deny this flow?"))return;
+  }
+  api("tasks/flows/resume",{method:"POST",body:JSON.stringify({flowToken:token,approve:approve})})
+    .then(function(r){
+      if(r.error){toast(r.error,"err");return}
+      toast("Flow "+(approve?"approved — agent will resume":"denied"),"ok");
+      _pendingFlowsCache=_pendingFlowsCache.filter(function(p){return(p.token||p.resumeToken)!==token});
+      renderTasksPanel();
+    })
+    .catch(function(e){toast(e.message||"Failed","err")});
+}
+
+function clearAllPendingFlows(){
+  if(_pendingFlowsCache.length===0){toast("No pending flows","info");return}
+  if(!confirm("Deny and clear all "+_pendingFlowsCache.length+" pending flow(s)?"))return;
+  var tokens=_pendingFlowsCache.map(function(p){return p.token||p.resumeToken});
+  var done=0,errs=0;
+  tokens.forEach(function(tk){
+    api("tasks/flows/resume",{method:"POST",body:JSON.stringify({flowToken:tk,approve:false}),_quiet:true})
+      .then(function(){done++;checkDone()})
+      .catch(function(){errs++;checkDone()});
+  });
+  function checkDone(){
+    if(done+errs<tokens.length)return;
+    _pendingFlowsCache=[];
+    renderTasksPanel();
+    if(errs>0)toast("Cleared "+done+", "+errs+" failed","err");
+    else toast("All pending flows cleared","ok");
+  }
+}
+
+function deleteAllStuckExecs(){
+  var stuck=_workflowExecsCache.filter(function(ex){return ex.state==="waiting"||ex.state==="failed"});
+  if(stuck.length===0){toast("No stuck or failed executions","info");return}
+  if(!confirm("Delete all "+stuck.length+" stuck/failed execution(s)? This cannot be undone."))return;
+  var ids=stuck.map(function(ex){return ex.flowId});
+  var done=0,errs=0;
+  ids.forEach(function(fid){
+    api("tasks/flows/"+encodeURIComponent(fid),{method:"DELETE",_quiet:true})
+      .then(function(){done++;checkDone()})
+      .catch(function(){errs++;checkDone()});
+  });
+  function checkDone(){
+    if(done+errs<ids.length)return;
+    _workflowExecsCache=_workflowExecsCache.filter(function(ex){return ex.state!=="waiting"&&ex.state!=="failed"});
+    renderTasksPanel();
+    if(errs>0)toast("Deleted "+done+", "+errs+" failed","err");
+    else toast("All stuck/failed executions deleted","ok");
+  }
+}
+
+// ── Scheduled Section ──
+function renderScheduledSection(tasks){
+  var h='';
+
+  // Sub-tabs for calendar views
+  h+='<div class="tasks-tabbar">';
   h+='<div class="tasks-tabs-row">';
   h+='<div class="tasks-tabs">';
   ["list","week","month","year"].forEach(function(v){
@@ -4860,9 +5404,14 @@ function renderTasksPanel(){
   h+='</div>';
   h+='</div>';
 
-  if(_calView==="list") h+=renderTaskList(tasks);
+  if(_calView==="list"){
+    h+='<div class="tasks-subsection">';
+    h+='<div class="tasks-subsection-header">Recurring Tasks</div>';
+    h+=renderTaskList(tasks);
+    h+='</div>';
+  }
   else if(tasks.length===0){
-    h+='<div style="text-align:center;padding:40px;color:var(--tx3);font-size:var(--fs-base);margin-top:16px"><div class="empty-icon">⏱</div>No tasks yet.<br><button class="btn btn-accent mt-md" onclick="showCreateTask()">+ Create your first task</button></div>';
+    h+='<div class="tasks-empty"><div class="tasks-empty-icon">⏱</div>No tasks yet.<br><button class="btn btn-accent mt-md" onclick="showCreateTask()">+ Create your first task</button></div>';
   }
   else{h+='<div class="mt-md">';
   if(_calView==="week") h+=renderCalWeek(tasks);
@@ -4870,10 +5419,10 @@ function renderTasksPanel(){
   else h+=renderCalYear(tasks);
   h+='</div>';}
 
-  // Heartbeats section (list view only, informational)
+  // Heartbeats section (list view only)
   if(_calView==="list"&&_heartbeatsCache.length>0){
-    h+='<div style="margin-top:28px;padding-top:20px;border-top:1px solid var(--border)">';
-    h+='<div style="font-size:var(--fs-sm);font-weight:700;color:var(--tx3);text-transform:uppercase;letter-spacing:.5px;margin-bottom:12px">Agent Heartbeats</div>';
+    h+='<div class="tasks-subsection" style="margin-top:20px">';
+    h+='<div class="tasks-subsection-header">Agent Heartbeats</div>';
     h+='<div class="flex-col gap-md">';
     _heartbeatsCache.forEach(function(hb){
       var ac=agentColor(hb.agentId||"");
@@ -4889,7 +5438,7 @@ function renderTasksPanel(){
     h+='</div></div>';
   }
 
-  el.innerHTML=h;
+  return h;
 }
 
 function showCreateTask(){
@@ -5119,6 +5668,151 @@ function deleteTask(id){
     .then(function(){
       toast("Task deleted","ok");
       _tasksCache=_tasksCache.filter(function(t){return t.id!==id});
+      renderTasksPanel();
+    })
+    .catch(function(e){toast(e.message,"err")});
+}
+
+// ── Workflow Executions (Tasks Pane) ──
+
+function _sortExecs(records){
+  function isActive(r){return r.state==="running"||r.state==="waiting"}
+  return records.slice().sort(function(a,b){
+    var aA=isActive(a),bA=isActive(b);
+    if(aA!==bA)return aA?-1:1;
+    return new Date(b.startedAt).getTime()-new Date(a.startedAt).getTime();
+  });
+}
+
+function _execStateBadge(state){
+  if(state==="running")return'<span class="badge badge-blue"><span class="spin" style="width:10px;height:10px;border-width:1.5px;margin-right:4px;vertical-align:middle"></span> Running</span>';
+  if(state==="waiting")return'<span class="badge badge-orange">⏸ Awaiting Approval</span>';
+  if(state==="completed")return'<span class="badge badge-green">✓ Completed</span>';
+  if(state==="failed")return'<span class="badge badge-red">✗ Failed</span>';
+  return'<span class="badge">'+esc(state)+'</span>';
+}
+
+function _stepStatusBadge(status){
+  if(status==="running")return'<span class="badge badge-blue" style="font-size:var(--fs-xs)"><span class="spin" style="width:8px;height:8px;border-width:1px;margin-right:3px;vertical-align:middle"></span> Running</span>';
+  if(status==="completed")return'<span class="badge badge-green" style="font-size:var(--fs-xs)">✓ Done</span>';
+  if(status==="failed")return'<span class="badge badge-red" style="font-size:var(--fs-xs)">✗ Failed</span>';
+  if(status==="skipped")return'<span class="badge" style="font-size:var(--fs-xs);background:var(--bg3);color:var(--tx3)">⊘ Skipped</span>';
+  return'<span class="badge" style="font-size:var(--fs-xs);background:var(--bg3);color:var(--tx3)">◯ Pending</span>';
+}
+
+function _fmtDuration(ms){
+  if(!ms&&ms!==0)return"—";
+  if(ms<1000)return ms+"ms";
+  var s=Math.floor(ms/1000);
+  if(s<60)return s+"s";
+  var m=Math.floor(s/60);s=s%60;
+  return m+"m "+s+"s";
+}
+
+function _elapsed(startedAt){
+  if(!startedAt)return"";
+  var ms=Date.now()-new Date(startedAt).getTime();
+  if(ms<0)ms=0;
+  return _fmtDuration(ms);
+}
+
+function renderExecCard(ex){
+  var isExpanded=_expandedFlowId===ex.flowId;
+  var isRunning=ex.state==="running";
+  var borderCol=ex.state==="running"?"var(--blue)":ex.state==="waiting"?"var(--orange)":ex.state==="failed"?"var(--red)":"var(--green)";
+  var h='<div class="wf-exec-card" style="background:var(--bg2);border:1px solid var(--border);border-left:3px solid '+borderCol+';border-radius:var(--radius);overflow:hidden">';
+  // Header row (clickable to expand)
+  h+='<div style="display:flex;align-items:center;gap:14px;padding:14px 18px;cursor:pointer" onclick="toggleExecDetail(\''+esc(ex.flowId)+'\')">';
+  h+='<div style="flex:1;min-width:0">';
+  h+='<div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-bottom:4px">';
+  h+='<span style="font-size:var(--fs-base);font-weight:600;color:var(--tx1)">'+esc(ex.flowName||ex.controllerId||ex.flowId)+'</span>';
+  h+=_execStateBadge(ex.state);
+  h+='</div>';
+  h+='<div style="display:flex;gap:14px;flex-wrap:wrap;font-size:var(--fs-sm);color:var(--tx3)">';
+  h+='<span title="Flow ID">🆔 '+esc(ex.flowId)+'</span>';
+  if(ex.controllerId)h+='<span title="Controller">🤖 '+esc(ex.controllerId)+'</span>';
+  h+='<span title="Started">▶ '+esc(fmtDate(ex.startedAt))+'</span>';
+  if(ex.endedAt)h+='<span title="Ended">⏹ '+esc(fmtDate(ex.endedAt))+'</span>';
+  h+='</div>';
+  if(ex.state==="failed"&&ex.error){
+    h+='<div style="margin-top:6px;font-size:var(--fs-sm);color:var(--red);background:rgba(255,71,87,.08);padding:6px 10px;border-radius:4px">'+esc(ex.error)+'</div>';
+  }
+  h+='</div>';
+  // Action buttons
+  h+='<div style="display:flex;align-items:center;gap:6px;flex-shrink:0">';
+  h+='<button class="btn btn-sm btn-danger" onclick="event.stopPropagation();deleteFlowExec(\''+esc(ex.flowId)+'\')"'+(isRunning?' disabled title="Cannot delete a running execution"':'')+'>Delete</button>';
+  h+='<span style="font-size:16px;color:var(--tx3);transition:.15s;transform:rotate('+(isExpanded?"90":"0")+'deg)">▶</span>';
+  h+='</div>';
+  h+='</div>';
+  // Expandable step detail
+  if(isExpanded){
+    h+=renderExecStepDetail(ex);
+  }
+  h+='</div>';
+  return h;
+}
+
+function renderExecStepDetail(ex){
+  var steps=ex.steps||[];
+  if(steps.length===0)return'<div style="padding:14px 18px;color:var(--tx3);font-size:var(--fs-sm)">No step data available</div>';
+  var h='<div style="border-top:1px solid var(--border);padding:14px 18px;background:var(--bg0)">';
+  h+='<div style="font-size:var(--fs-sm);font-weight:600;color:var(--tx2);margin-bottom:10px;text-transform:uppercase;letter-spacing:.4px">Steps</div>';
+  steps.forEach(function(step,i){
+    var isStepRunning=step.status==="running";
+    var isWaitingHere=ex.state==="waiting"&&ex.waitingStep===step.id;
+    var stepBorder=step.status==="completed"?"var(--green)":step.status==="running"?"var(--blue)":step.status==="failed"?"var(--red)":"var(--border)";
+    h+='<div style="display:flex;align-items:center;gap:12px;padding:10px 14px;background:var(--bg2);border:1px solid var(--border);border-left:3px solid '+stepBorder+';border-radius:var(--radius);margin-bottom:6px">';
+    h+='<div style="font-size:var(--fs-sm);font-weight:700;color:var(--tx3);min-width:22px">'+(i+1)+'</div>';
+    h+='<div style="flex:1;min-width:0">';
+    h+='<div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">';
+    h+='<span style="font-size:var(--fs-base);font-weight:600;color:var(--tx1)">'+esc(step.id)+'</span>';
+    h+=_stepStatusBadge(step.status);
+    if(isWaitingHere)h+='<span class="badge badge-orange" style="font-size:var(--fs-xs)">⏸ Awaiting Approval</span>';
+    h+='</div>';
+    h+='<div style="font-size:var(--fs-sm);color:var(--tx3);margin-top:2px">';
+    h+='→ '+esc(step.agentId);
+    if(step.status==="completed"&&step.duration!=null)h+=' · '+_fmtDuration(step.duration);
+    if(isStepRunning&&step.startedAt)h+=' · ⏱ '+_elapsed(step.startedAt)+' elapsed';
+    h+='</div>';
+    if(step.status==="failed"&&step.error){
+      h+='<div style="margin-top:4px;font-size:var(--fs-xs);color:var(--red)">'+esc(step.error)+'</div>';
+    }
+    h+='</div>';
+    // Approve button for waiting steps
+    if(isWaitingHere){
+      h+='<button class="btn btn-sm btn-accent" onclick="event.stopPropagation();approveFlowExec(\''+esc(ex.flowId)+'\')">Approve</button>';
+    }
+    h+='</div>';
+  });
+  h+='</div>';
+  return h;
+}
+
+function toggleExecDetail(flowId){
+  _expandedFlowId=_expandedFlowId===flowId?null:flowId;
+  renderTasksPanel();
+}
+
+function approveFlowExec(flowId){
+  api("tasks/flows/"+encodeURIComponent(flowId)+"/approve",{method:"POST",body:JSON.stringify({})})
+    .then(function(){
+      toast("Flow approved — resuming","ok");
+      // Update local cache: waiting → running
+      _workflowExecsCache.forEach(function(ex){
+        if(ex.flowId===flowId&&ex.state==="waiting")ex.state="running";
+      });
+      renderTasksPanel();
+    })
+    .catch(function(e){toast(e.message,"err")});
+}
+
+function deleteFlowExec(flowId){
+  if(!confirm("Delete workflow execution "+flowId+"?"))return;
+  api("tasks/flows/"+encodeURIComponent(flowId),{method:"DELETE"})
+    .then(function(){
+      toast("Execution deleted","ok");
+      _workflowExecsCache=_workflowExecsCache.filter(function(ex){return ex.flowId!==flowId});
+      if(_expandedFlowId===flowId)_expandedFlowId=null;
       renderTasksPanel();
     })
     .catch(function(e){toast(e.message,"err")});

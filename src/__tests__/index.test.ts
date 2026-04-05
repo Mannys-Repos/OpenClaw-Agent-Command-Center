@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from "vitest";
-import register from "./index.js";
+import register from "../server/index.js";
 
 describe("AgentDashboardPlugin", () => {
     it("registers a background service and gateway method", () => {
@@ -7,6 +7,7 @@ describe("AgentDashboardPlugin", () => {
             logger: { info: vi.fn() },
             registerService: vi.fn(),
             registerGatewayMethod: vi.fn(),
+            registerTool: vi.fn(),
             config: {},
         };
 
@@ -24,6 +25,13 @@ describe("AgentDashboardPlugin", () => {
             "dashboard.status",
             expect.any(Function)
         );
+
+        expect(api.registerTool).toHaveBeenCalledWith(
+            expect.objectContaining({
+                name: "run_task_flow",
+            }),
+            { optional: true }
+        );
     });
 
     it("reports custom port via RPC", () => {
@@ -31,6 +39,7 @@ describe("AgentDashboardPlugin", () => {
             logger: { info: vi.fn() },
             registerService: vi.fn(),
             registerGatewayMethod: vi.fn(),
+            registerTool: vi.fn(),
             config: {
                 plugins: {
                     entries: {

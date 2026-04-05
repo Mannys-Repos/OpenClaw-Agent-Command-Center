@@ -5,6 +5,9 @@ import { homedir } from "node:os";
 import * as http from "node:http";
 import * as https from "node:https";
 import type { IncomingMessage, ServerResponse } from "node:http";
+import type { SaveFlowRequest, SaveFlowResponse, WorkflowExecutionRecord } from "../orchestrator/types.js";
+import { validateFlowDefinition, deriveFileNames, TASK_FLOW_TOOL_ID } from "../orchestrator/utils.js";
+import { generateFlowDefinitionFile, generateAgentsMdSnippet, parseFlowDefinitionFile } from "../orchestrator/codegen.js";
 
 // ─── Paths ───
 const OPENCLAW_DIR = join(homedir(), ".openclaw");
@@ -13,6 +16,8 @@ const AGENTS_STATE_DIR = join(OPENCLAW_DIR, "agents");
 const DASHBOARD_CONFIG_DIR = join(OPENCLAW_DIR, "extensions", "openclaw-agent-dashboard");
 const DASHBOARD_CONFIG_PATH = join(DASHBOARD_CONFIG_DIR, "dashboard-config.json");
 const DASHBOARD_SESSIONS_DIR = join(DASHBOARD_CONFIG_DIR, "sessions");
+const DASHBOARD_TASKS_DIR = join(DASHBOARD_CONFIG_DIR, "Tasks");
+const DASHBOARD_FLOW_STATE_DIR = join(DASHBOARD_CONFIG_DIR, "flow-state");
 
 const WORKSPACE_MD_FILES = [
     "AGENTS.md", "SOUL.md", "USER.md", "IDENTITY.md",
@@ -2335,6 +2340,266 @@ export async function handleApiRequest(req: IncomingMessage, res: ServerResponse
         // Fire-and-forget async cancel — don't block the response
         execAsync(`openclaw tasks cancel "${taskId}"`, { timeout: 8000 }).catch(() => { });
         return json(res, 200, { ok: true });
+    }
+
+    // ─── POST /api/tasks/flows/save — generate flow definition + tool registration files ───
+    if (path === "/tasks/flows/save" && method === "POST") {
+        const body: SaveFlowRequest = await parseBody(req);
+        const flow = body?.flow;
+
+        // Validate required fields
+        if (!flow || !flow.name || !flow.steps || flow.steps.length === 0) {
+            return json(res, 400, { error: "flow name and at least one step required" });
+        }
+
+        // Validate flow definition (name format, step ids, agentIds, uniqueness)
+        const validation = validateFlowDefinition(flow);
+        if (!validation.valid) {
+            return json(res, 400, { error: validation.error });
+        }
+
+        // Check flow name uniqueness against existing files in Tasks/ (skip if overwrite flag is set)
+        const { flowFile } = deriveFileNames(flow.name);
+        const overwrite = body?.overwrite === true;
+        if (!overwrite && existsSync(DASHBOARD_TASKS_DIR)) {
+            const flowFilePath = join(DASHBOARD_TASKS_DIR, flowFile);
+            if (existsSync(flowFilePath)) {
+                return json(res, 409, { error: `Flow file already exists: Tasks/${flowFile}` });
+            }
+        }
+
+        // Create Tasks/ directory if it doesn't exist
+        try {
+            if (!existsSync(DASHBOARD_TASKS_DIR)) {
+                mkdirSync(DASHBOARD_TASKS_DIR, { recursive: true });
+            }
+        } catch (e: any) {
+            return json(res, 500, { error: `Failed to create Tasks directory: ${e.message}` });
+        }
+
+        // Generate and write flow definition file (no per-flow tool file needed)
+        try {
+            const flowContent = generateFlowDefinitionFile(flow);
+            writeFileSync(join(DASHBOARD_TASKS_DIR, flowFile), flowContent, "utf-8");
+        } catch (e: any) {
+            return json(res, 500, { error: `Failed to write flow file: ${e.message}` });
+        }
+
+        // Auto-add run_task_flow to the agent's alsoAllow if not already present
+        try {
+            const config = readConfig();
+            const agents = config.agents?.list || [];
+            const agent = agents.find((a: any) => a.id === flow.agentId);
+            if (agent) {
+                const tools = agent.tools || {};
+                const also: string[] = tools.alsoAllow || tools.allow || [];
+                if (!also.includes(TASK_FLOW_TOOL_ID)) {
+                    if (!agent.tools) agent.tools = {};
+                    agent.tools.alsoAllow = [...also, TASK_FLOW_TOOL_ID];
+                    writeConfig(config);
+                }
+            }
+        } catch (_e: any) {
+            // Non-fatal — tool was saved, config update is best-effort
+        }
+
+        const toolId = TASK_FLOW_TOOL_ID;
+        const snippet = generateAgentsMdSnippet(flow);
+
+        const response: SaveFlowResponse = {
+            ok: true,
+            flowFile: `Tasks/${flowFile}`,
+            toolId,
+            snippet,
+        };
+        return json(res, 200, response);
+    }
+
+    // ─── GET /api/tasks/flows — list workflow execution records via CLI ───
+    if (path === "/tasks/flows" && method === "GET") {
+        try {
+            const out = await execAsync("openclaw tasks flow list --json", { timeout: 10000 });
+            const trimmed = (out || "").trim();
+            if (!trimmed) {
+                return json(res, 200, { flows: [] });
+            }
+            const parsed = JSON.parse(trimmed);
+            const flows: WorkflowExecutionRecord[] = Array.isArray(parsed) ? parsed : (parsed.flows || parsed.executions || []);
+            return json(res, 200, { flows });
+        } catch (e: any) {
+            return json(res, 500, { error: `Task flow command failed: ${e.message}` });
+        }
+    }
+
+    // ─── POST /api/tasks/flows/:flowId/approve — approve a waiting flow ───
+    const flowApproveMatch = path.match(/^\/tasks\/flows\/([^/]+)\/approve$/);
+    if (flowApproveMatch && method === "POST") {
+        const flowId = decodeURIComponent(flowApproveMatch[1]);
+        const out = await execAsync(`openclaw tasks flow approve "${flowId}"`, { timeout: 10000 });
+        const lower = (out || "").toLowerCase();
+        if (lower.includes("not found") || lower.includes("no such") || lower.includes("not exist")) {
+            return json(res, 404, { error: `Flow not found: ${flowId}` });
+        }
+        if (lower.includes("not in waiting") || lower.includes("not waiting") || lower.includes("cannot approve") || lower.includes("conflict")) {
+            return json(res, 409, { error: "Flow is not in waiting state" });
+        }
+        if (lower.includes("error") || lower.includes("fail")) {
+            return json(res, 500, { error: `Task flow command failed: ${out.trim()}` });
+        }
+        return json(res, 200, { ok: true });
+    }
+
+    // ─── GET /api/tasks/flows/pending — list paused flows waiting for approval ───
+    if (path === "/tasks/flows/pending" && method === "GET") {
+        const pending: any[] = [];
+        try {
+            if (existsSync(DASHBOARD_FLOW_STATE_DIR)) {
+                const files = readdirSync(DASHBOARD_FLOW_STATE_DIR).filter(f => f.endsWith(".json"));
+                for (const file of files) {
+                    try {
+                        const raw = readFileSync(join(DASHBOARD_FLOW_STATE_DIR, file), "utf-8");
+                        const state = JSON.parse(raw);
+                        if (state.status === "waiting_for_approval") {
+                            pending.push(state);
+                        }
+                    } catch { }
+                }
+            }
+        } catch { }
+        return json(res, 200, { pending });
+    }
+
+    // ─── POST /api/tasks/flows/resume — approve or deny a paused flow from the dashboard ───
+    if (path === "/tasks/flows/resume" && method === "POST") {
+        const body = await parseBody(req);
+        const token = body?.resumeToken || body?.flowToken;
+        const approve = body?.approve;
+        if (!token) return json(res, 400, { error: "flowToken required" });
+        if (typeof approve !== "boolean") return json(res, 400, { error: "approve (boolean) required" });
+
+        const statePath = join(DASHBOARD_FLOW_STATE_DIR, `${token}.json`);
+        if (!existsSync(statePath)) {
+            return json(res, 404, { error: "Flow token not found or expired" });
+        }
+
+        let state;
+        try { state = JSON.parse(readFileSync(statePath, "utf-8")); } catch {
+            return json(res, 500, { error: "Failed to read flow state" });
+        }
+
+        if (!approve) {
+            try { unlinkSync(statePath); } catch { }
+            return json(res, 200, { ok: true, action: "denied", flowName: state.flowName, step: state.waitingAtStepId });
+        }
+
+        // Approve — send a message to the orchestrator agent to trigger the resume
+        try {
+            const agentId = state.agentId;
+            const message = `The user has approved the flow "${state.flowName}" to continue past step "${state.waitingAtStepId}". ` +
+                `Call the \`${TASK_FLOW_TOOL_ID}\` tool with action="resume", flowToken="${token}", approve=true to continue the flow.`;
+
+            await callGatewayChat(agentId, message, `agent:${agentId}:main`, readConfig());
+        } catch (e: any) {
+            // Non-fatal
+        }
+
+        return json(res, 200, { ok: true, action: "approved", flowName: state.flowName, step: state.waitingAtStepId, flowToken: token });
+    }
+
+    // ─── DELETE /api/tasks/flows/:flowId — delete a workflow execution record ───
+    const flowDeleteMatch = path.match(/^\/tasks\/flows\/([^/]+)$/);
+    if (flowDeleteMatch && method === "DELETE") {
+        const flowId = decodeURIComponent(flowDeleteMatch[1]);
+        const out = await execAsync(`openclaw tasks flow delete "${flowId}"`, { timeout: 10000 });
+        const lower = (out || "").toLowerCase();
+        if (lower.includes("not found") || lower.includes("no such") || lower.includes("not exist")) {
+            return json(res, 404, { error: `Flow not found: ${flowId}` });
+        }
+        if (lower.includes("running") || lower.includes("active") || lower.includes("cannot delete") || lower.includes("conflict")) {
+            return json(res, 409, { error: "Cannot delete a running flow" });
+        }
+        if (lower.includes("error") || lower.includes("fail")) {
+            return json(res, 500, { error: `Task flow command failed: ${out.trim()}` });
+        }
+        return json(res, 200, { ok: true });
+    }
+
+    // ─── GET /api/tasks/flows/definition/:agentId — load flow definition for an agent ───
+    const flowDefMatch = path.match(/^\/tasks\/flows\/definition\/([^/]+)$/);
+    if (flowDefMatch && method === "GET") {
+        const agentId = decodeURIComponent(flowDefMatch[1]);
+        if (!existsSync(DASHBOARD_TASKS_DIR)) {
+            return json(res, 200, { flow: null });
+        }
+        try {
+            const files = readdirSync(DASHBOARD_TASKS_DIR).filter(f => f.endsWith(".flow.ts"));
+            for (const file of files) {
+                const content = readFileSync(join(DASHBOARD_TASKS_DIR, file), "utf-8");
+                const parsed = parseFlowDefinitionFile(content);
+                if (parsed && parsed.agentId === agentId) {
+                    return json(res, 200, { flow: parsed });
+                }
+            }
+            return json(res, 200, { flow: null });
+        } catch (e: any) {
+            return json(res, 500, { error: `Failed to read flow definitions: ${e.message}` });
+        }
+    }
+
+    // ─── DELETE /api/tasks/flows/definition/:agentId/:flowName — delete a flow definition and disable tool ───
+    const flowDefDeleteMatch = path.match(/^\/tasks\/flows\/definition\/([^/]+)\/([^/]+)$/);
+    if (flowDefDeleteMatch && method === "DELETE") {
+        const agentId = decodeURIComponent(flowDefDeleteMatch[1]);
+        const flowName = decodeURIComponent(flowDefDeleteMatch[2]);
+        const { flowFile } = deriveFileNames(flowName);
+        const flowFilePath = join(DASHBOARD_TASKS_DIR, flowFile);
+
+        if (!existsSync(flowFilePath)) {
+            return json(res, 404, { error: `Flow file not found: Tasks/${flowFile}` });
+        }
+
+        try {
+            unlinkSync(flowFilePath);
+        } catch (e: any) {
+            return json(res, 500, { error: `Failed to delete flow file: ${e.message}` });
+        }
+
+        // Check if any other flow files remain for this agent
+        let hasOtherFlows = false;
+        try {
+            if (existsSync(DASHBOARD_TASKS_DIR)) {
+                const remaining = readdirSync(DASHBOARD_TASKS_DIR).filter(f => f.endsWith(".flow.ts"));
+                for (const file of remaining) {
+                    const content = readFileSync(join(DASHBOARD_TASKS_DIR, file), "utf-8");
+                    const parsed = parseFlowDefinitionFile(content);
+                    if (parsed && parsed.agentId === agentId) {
+                        hasOtherFlows = true;
+                        break;
+                    }
+                }
+            }
+        } catch { }
+
+        // Remove run_task_flow from alsoAllow if no other flows remain for this agent
+        if (!hasOtherFlows) {
+            try {
+                const config = readConfig();
+                const agents = config.agents?.list || [];
+                const agent = agents.find((a: any) => a.id === agentId);
+                if (agent) {
+                    const tools = agent.tools || {};
+                    const also: string[] = tools.alsoAllow || tools.allow || [];
+                    const idx = also.indexOf(TASK_FLOW_TOOL_ID);
+                    if (idx >= 0) {
+                        if (!agent.tools) agent.tools = {};
+                        agent.tools.alsoAllow = also.filter((t: string) => t !== TASK_FLOW_TOOL_ID);
+                        writeConfig(config);
+                    }
+                }
+            } catch { }
+        }
+
+        return json(res, 200, { ok: true, toolDisabled: !hasOtherFlows });
     }
 
     // ─── GET /api/models/status — query provider APIs for quota/usage ───
