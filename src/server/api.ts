@@ -24,6 +24,20 @@ const WORKSPACE_MD_FILES = [
     "TOOLS.md", "BOOTSTRAP.md", "HEARTBEAT.md",
 ];
 
+// ─── CLI result cache — avoids re-spawning slow child processes on rapid page loads ───
+const _cliCache = new Map<string, { data: any; expires: number }>();
+const CLI_CACHE_TTL = 15_000; // 15 seconds
+
+function getCachedCli(key: string): any | null {
+    const entry = _cliCache.get(key);
+    if (entry && Date.now() < entry.expires) return entry.data;
+    return null;
+}
+
+function setCachedCli(key: string, data: any): void {
+    _cliCache.set(key, { data, expires: Date.now() + CLI_CACHE_TTL });
+}
+
 // ─── Provider status cache — built once at startup, served on page load ───
 let _providerCache: any = null;
 let _providerCacheBuilding = false;
@@ -2242,6 +2256,9 @@ export async function handleApiRequest(req: IncomingMessage, res: ServerResponse
 
     // ─── GET /api/tasks — list user-defined recurring tasks + heartbeats separately ───
     if (path === "/tasks" && method === "GET") {
+        const cached = getCachedCli("tasks-list");
+        if (cached) return json(res, 200, cached);
+
         const config = readConfig();
         const agents = config.agents?.list || [];
 
@@ -2283,7 +2300,9 @@ export async function handleApiRequest(req: IncomingMessage, res: ServerResponse
             }
         });
 
-        return json(res, 200, { tasks: userTasks, heartbeats });
+        const result = { tasks: userTasks, heartbeats };
+        setCachedCli("tasks-list", result);
+        return json(res, 200, result);
     }
 
     // ─── POST /api/tasks — create a user-defined task ───
@@ -2304,6 +2323,7 @@ export async function handleApiRequest(req: IncomingMessage, res: ServerResponse
         };
         config.tasks.push(newTask);
         writeConfig(config);
+        _cliCache.delete("tasks-list"); // invalidate cache
         return json(res, 201, { ok: true, task: newTask });
     }
 
@@ -2315,6 +2335,7 @@ export async function handleApiRequest(req: IncomingMessage, res: ServerResponse
             config.tasks = config.tasks.filter((t: any) => t.id !== taskId);
             writeConfig(config);
         }
+        _cliCache.delete("tasks-list"); // invalidate cache
         // Fire-and-forget async cancel — don't block the response
         execAsync(`openclaw tasks cancel "${taskId}"`, { timeout: 8000 }).catch(() => { });
         return json(res, 200, { ok: true });
@@ -2417,15 +2438,22 @@ export async function handleApiRequest(req: IncomingMessage, res: ServerResponse
 
     // ─── GET /api/tasks/flows — list workflow execution records via CLI ───
     if (path === "/tasks/flows" && method === "GET") {
+        const cached = getCachedCli("tasks-flows");
+        if (cached) return json(res, 200, cached);
+
         try {
             const out = await execAsync("openclaw tasks flow list --json", { timeout: 10000 });
             const trimmed = (out || "").trim();
             if (!trimmed) {
-                return json(res, 200, { flows: [] });
+                const result = { flows: [] };
+                setCachedCli("tasks-flows", result);
+                return json(res, 200, result);
             }
             const parsed = JSON.parse(trimmed);
             const flows: WorkflowExecutionRecord[] = Array.isArray(parsed) ? parsed : (parsed.flows || parsed.executions || []);
-            return json(res, 200, { flows });
+            const result = { flows };
+            setCachedCli("tasks-flows", result);
+            return json(res, 200, result);
         } catch (e: any) {
             return json(res, 500, { error: `Task flow command failed: ${e.message}` });
         }
@@ -2521,6 +2549,7 @@ export async function handleApiRequest(req: IncomingMessage, res: ServerResponse
         if (lower.includes("error") || lower.includes("fail")) {
             return json(res, 500, { error: `Task flow command failed: ${out.trim()}` });
         }
+        _cliCache.delete("tasks-flows"); // invalidate cache
         return json(res, 200, { ok: true });
     }
 

@@ -5219,31 +5219,37 @@ function showTasksPage(){
   if(!_calAnchor)_calAnchor=new Date();
   openPagePanel("📋 Tasks",
     '<div id="tasks-body"><div class="loading-center"><span class="spin"></span> Loading…</div></div>');
+
+  // Render progressively — show data as each call completes instead of waiting for all three
   var loaded={tasks:false,flows:false,pending:false};
-  function checkRender(){if(loaded.tasks&&loaded.flows&&loaded.pending)renderTasksPanel();}
-  api("tasks").then(function(d){
-    _tasksCache=d.tasks||[];
-    _heartbeatsCache=d.heartbeats||[];
-    loaded.tasks=true;checkRender();
-  }).catch(function(){
-    _tasksCache=[];_heartbeatsCache=[];
-    loaded.tasks=true;checkRender();
-  });
-  api("tasks/flows").then(function(d){
-    _workflowExecsCache=d.flows||d.executions||[];
-    if(!Array.isArray(_workflowExecsCache))_workflowExecsCache=[];
-    loaded.flows=true;checkRender();
-  }).catch(function(){
-    _workflowExecsCache=[];
-    loaded.flows=true;checkRender();
-  });
-  api("tasks/flows/pending").then(function(d){
+  function tryRender(){
+    // Render as soon as pending (fast) is done — don't wait for slow CLI calls
+    if(loaded.pending) renderTasksPanel();
+  }
+
+  api("tasks/flows/pending",{_quiet:true}).then(function(d){
     _pendingFlowsCache=d.pending||[];
     if(!Array.isArray(_pendingFlowsCache))_pendingFlowsCache=[];
-    loaded.pending=true;checkRender();
+    loaded.pending=true;tryRender();
   }).catch(function(){
     _pendingFlowsCache=[];
-    loaded.pending=true;checkRender();
+    loaded.pending=true;tryRender();
+  });
+  api("tasks",{_quiet:true}).then(function(d){
+    _tasksCache=d.tasks||[];
+    _heartbeatsCache=d.heartbeats||[];
+    loaded.tasks=true;tryRender();
+  }).catch(function(){
+    _tasksCache=[];_heartbeatsCache=[];
+    loaded.tasks=true;tryRender();
+  });
+  api("tasks/flows",{_quiet:true}).then(function(d){
+    _workflowExecsCache=d.flows||d.executions||[];
+    if(!Array.isArray(_workflowExecsCache))_workflowExecsCache=[];
+    loaded.flows=true;tryRender();
+  }).catch(function(){
+    _workflowExecsCache=[];
+    loaded.flows=true;tryRender();
   });
 }
 
