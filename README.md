@@ -15,8 +15,8 @@ all from your browser.
 
 <table>
 <tr>
-<td><img src="screenshots/desktop-drawer.png" alt="Agent configuration drawer" /></td>
-<td><img src="screenshots/desktop-tasks.png" alt="Tasks and scheduling view" /></td>
+<td><img src="screenshots/desktop-drawer.png" alt="Channels and agent bindings" /></td>
+<td><img src="screenshots/desktop-tasks.png" alt="Task flows and scheduling" /></td>
 </tr>
 </table>
 
