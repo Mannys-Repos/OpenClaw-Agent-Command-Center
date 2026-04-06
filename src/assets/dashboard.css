@@ -571,7 +571,7 @@ body {
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
-  margin-top: 2px
+  margin-top: 4px
 }
 
 /* Agent Drawer — slide-over overlay from right */
@@ -1534,6 +1534,89 @@ label {
 .tasks-empty-icon {
   font-size: 28px;
   margin-bottom: 8px;
+}
+
+/* Cron job card */
+.cron-card {
+  background: var(--bg2);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 16px 18px;
+}
+
+.cron-card-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 10px;
+  margin-bottom: 8px;
+}
+
+.cron-card-left {
+  min-width: 0;
+  flex: 1;
+}
+
+.cron-card-name {
+  font-size: var(--fs-base);
+  font-weight: 600;
+  color: var(--tx1);
+  margin-bottom: 4px;
+  word-break: break-word;
+}
+
+.cron-card-badges {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
+.cron-card-actions {
+  display: flex;
+  gap: 6px;
+  flex-shrink: 0;
+  flex-wrap: wrap;
+}
+
+.cron-card-meta {
+  display: flex;
+  gap: 16px;
+  flex-wrap: wrap;
+  font-size: var(--fs-sm);
+  color: var(--tx2);
+  margin-bottom: 6px;
+}
+
+.cron-card-msg {
+  font-size: var(--fs-sm);
+  color: var(--tx3);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 100%;
+}
+
+.cron-card-times {
+  display: flex;
+  gap: 16px;
+  flex-wrap: wrap;
+  font-size: var(--fs-xs);
+  color: var(--tx3);
+  margin-top: 6px;
+}
+
+.cron-card-delivery {
+  font-size: var(--fs-xs);
+  color: var(--tx3);
+  margin-top: 4px;
+}
+
+@media (max-width: 600px) {
+  .cron-card-header {
+    flex-direction: column;
+    gap: 6px;
+  }
 }
 
 .pending-approval-card {
@@ -2569,9 +2652,12 @@ html {
 .rn-heartbeat {
   font-size: var(--fs-xs);
   color: #5a8a6a;
-  margin-top: 1px;
+  margin-top: 4px;
   text-align: center;
-  white-space: nowrap
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 100%
 }
 
 /* Channel node text */
@@ -3777,7 +3863,7 @@ code {
   flex-wrap: wrap;
   gap: 3px;
   justify-content: center;
-  margin-top: 3px;
+  margin-top: 6px;
 }
 
 .rn-ch-badge {
@@ -4119,7 +4205,42 @@ code {
     gap: 8px;
   }
 
+  .orch-step-name-field,
+  .orch-step-agent-field {
+    width: 100%;
+  }
+
+  .orch-step-body {
+    width: 100%;
+  }
+
+  .orch-step-input,
+  .orch-step-desc-ta {
+    width: 100%;
+    max-width: 100%;
+  }
+
   .orch-setup-checklist {
     padding: var(--sp-sm) var(--sp-md);
+  }
+
+  .orch-actions {
+    flex-wrap: wrap;
+  }
+
+  /* Drawer tabs: scroll hint via fade edge */
+  .drawer-tabs {
+    -webkit-overflow-scrolling: touch;
+    scrollbar-width: none;
+    /* Firefox */
+  }
+
+  .drawer-tabs::-webkit-scrollbar {
+    display: none;
+  }
+
+  .drawer-tabs .dtab {
+    padding: 10px 12px;
+    font-size: var(--fs-xs);
   }
 }

@@ -379,7 +379,7 @@ function getModelVal(id){
 // ── Graph caching layer ──
 // Fingerprint agents+bindings+channels so we skip expensive graph re-render when nothing changed.
 var _graphFingerprint="";
-var _GRAPH_VERSION="v25"; // bump to invalidate localStorage graph cache after code changes
+var _GRAPH_VERSION="v28"; // bump to invalidate localStorage graph cache after code changes
 function _computeGraphFingerprint(agents,bindings){
   // Deterministic JSON of the fields that affect the graph layout
   var data=_GRAPH_VERSION+JSON.stringify({
@@ -781,13 +781,22 @@ function drawRelMap(){
   agents.forEach(function(a){
     var label=a.name||a.id;
     var tw=measureText(label,"600 "+FONT_SIZE+"px -apple-system,BlinkMacSystemFont,sans-serif");
-    nodeWidths[a.id]=Math.max(120,Math.round(tw+PAD_H*2));
+    var nw=Math.max(120,Math.round(tw+PAD_H*2));
+    // Widen card if heartbeat text is longer than the name
+    var hb=a.heartbeat||{};
+    if(hb.every){
+      var hbText="♡ "+hb.every+(hb.model?" · "+hb.model:"");
+      var hbW=measureText(hbText,"600 "+FONT_SIZE+"px -apple-system,BlinkMacSystemFont,sans-serif");
+      var maxHbW=280;// cap so cards don't get absurdly wide
+      nw=Math.max(nw,Math.min(Math.round(hbW+PAD_H*2),maxHbW));
+    }
+    nodeWidths[a.id]=nw;
     var extraLines=0;
     if(getModel(a))extraLines++;
     if(a.heartbeat&&a.heartbeat.every)extraLines++;
     if(a["default"])extraLines++;
     if(agentChMap[a.id])extraLines++;// channel badge row
-    nodeHeights[a.id]=ICON_H+FONT_SIZE+PAD_V*2+extraLines*LINE_H+16;
+    nodeHeights[a.id]=ICON_H+FONT_SIZE+PAD_V*2+extraLines*(LINE_H+3)+16;
   });
   var NH=Math.max.apply(null,Object.values(nodeHeights).concat([70]));
   var chWidths={};
@@ -1213,6 +1222,10 @@ function openDrawer(a,tab){
   if(bk)bk.classList.add("open");
   renderDrawer();
   renderAgentList();
+  // Load orchestrator flow if opening on that tab
+  if(drawerTab==="orchestrator"&&a){
+    _loadOrchFlowForAgent(a.id);
+  }
   // Fetch fresh agent data (file line counts etc.)
   api("agents/"+encodeURIComponent(a.id)).then(function(d){
     if(d.agent&&drawerAgent&&drawerAgent.id===a.id){
@@ -1462,7 +1475,10 @@ function saveIdentity(id){
     // Update local agent data instead of full reload
     if(r.agent){
       for(var i=0;i<D.agents.length;i++){
-        if(D.agents[i].id===id){D.agents[i]=Object.assign(D.agents[i],r.agent);break}
+        if(D.agents[i].id===id){
+          // Remove properties that were deleted server-side (e.g. heartbeat cleared)
+          if(u.heartbeat===null)delete D.agents[i].heartbeat;
+          D.agents[i]=Object.assign(D.agents[i],r.agent);break}
       }
       if(drawerAgent&&drawerAgent.id===id){
         drawerAgent=D.agents.find(function(a){return a.id===id})||drawerAgent;
@@ -5197,6 +5213,7 @@ var _expandedFlowId=null;
 function showTasksPage(){
   location.hash="tasks";
   if(!_calAnchor)_calAnchor=new Date();
+  _registeredFlowsCache=[]; // reset so it re-fetches
   openPagePanel("📋 Tasks",
     '<div id="tasks-body"><div class="loading-center"><span class="spin"></span> Loading…</div></div>');
 
@@ -5264,8 +5281,29 @@ function renderTasksPanel(){
 function switchTasksSection(s){_tasksSection=s;renderTasksPanel();}
 
 // ── Flows Section ──
+var _registeredFlowsCache=[];
 function renderFlowsSection(){
   var h='';
+
+  // ── Section 0: Registered Flow Definitions ──
+  h+='<div class="tasks-subsection">';
+  h+='<div class="tasks-subsection-header">Registered Flows</div>';
+  if(_registeredFlowsCache.length===0){
+    h+='<div style="font-size:var(--fs-sm);color:var(--tx3);padding:8px 0">Loading…</div>';
+    // Fetch flow definitions
+    api("tasks/flows/definitions",{_quiet:true}).then(function(d){
+      _registeredFlowsCache=d.flows||[];
+      renderTasksPanel();
+    }).catch(function(){_registeredFlowsCache=[];});
+  }else{
+    h+='<div style="display:flex;flex-direction:column;gap:8px">';
+    _registeredFlowsCache.forEach(function(f){
+      h+=_renderRegisteredFlowCard(f);
+    });
+    h+='</div>';
+  }
+  h+='</div>';
+
   // Split active flows into running vs waiting
   var running=_pendingFlowsCache.filter(function(p){return p.status==="running"});
   var waiting=_pendingFlowsCache.filter(function(p){return p.status==="waiting_for_approval"});
@@ -5332,6 +5370,52 @@ function renderFlowsSection(){
   }
   h+='</div>';
   return h;
+}
+
+/** Render a registered flow definition card */
+function _renderRegisteredFlowCard(f){
+  var ac=agentColor(f.agentId||"");
+  var h='<div class="cron-card">';
+  // Header: name+badges left, edit button right
+  h+='<div class="cron-card-header">';
+  h+='<div class="cron-card-left">';
+  h+='<div class="cron-card-name">'+esc(f.name)+'</div>';
+  h+='<div class="cron-card-badges">';
+  h+='<span class="badge" style="background:rgba(52,152,219,.12);color:var(--blue)">'+f.stepCount+' steps</span>';
+  var hasGate=f.steps&&f.steps.some(function(s){return s.humanIntervention});
+  if(hasGate)h+='<span class="badge badge-orange">⏸ approval gate</span>';
+  h+='</div>';
+  h+='</div>';
+  h+='<div class="cron-card-actions">';
+  h+='<button class="btn btn-sm" onclick="editFlowForAgent(\''+esc(f.agentId)+'\')">✎ Edit</button>';
+  h+='</div>';
+  h+='</div>';
+  if(f.description){
+    h+='<div class="cron-card-msg">'+esc(f.description.substring(0,150))+'</div>';
+  }
+  // Step pipeline
+  h+='<div style="display:flex;align-items:center;gap:0;flex-wrap:wrap;margin:8px 0 6px">';
+  (f.steps||[]).forEach(function(s,i){
+    if(i>0)h+='<div style="width:16px;height:2px;background:var(--border)"></div>';
+    var stepCol=agentColor(s.agentId||"");
+    h+='<div style="display:flex;align-items:center;gap:4px;padding:4px 10px;border-radius:14px;background:var(--bg3);font-size:var(--fs-sm);color:var(--tx2);white-space:nowrap;margin:2px 0">';
+    if(s.humanIntervention)h+='<span style="color:var(--orange)">⏸</span>';
+    h+='<span>'+esc(s.id)+'</span>';
+    h+='<span style="color:'+stepCol+';font-size:var(--fs-xs)">'+esc(s.agentId)+'</span>';
+    h+='</div>';
+  });
+  h+='</div>';
+  h+='<div style="font-size:var(--fs-xs);color:var(--tx3)">Owner: <span style="color:'+ac+'">'+esc(f.agentId)+'</span></div>';
+  h+='</div>';
+  return h;
+}
+function editFlowForAgent(agentId){
+  // Close the tasks panel and open the agent drawer on the orchestrator tab
+  closePagePanel();
+  var agent=null;
+  for(var i=0;i<D.agents.length;i++){if(D.agents[i].id===agentId){agent=D.agents[i];break}}
+  if(!agent){toast("Agent not found: "+agentId,"err");return}
+  openDrawer(agent,"orchestrator");
 }
 
 /** Render a single active flow card with step progress pipeline */
@@ -5425,9 +5509,11 @@ function dashboardApproveFlow(token,approve){
       // If we have a session key, send the approval through the dashboard session API
       // This ensures the message appears in the user's chat and the agent processes it in-context
       if(sk&&agentId){
-        var msg='[Approved from dashboard] The deploy step has been approved. Call run_task_flow with action="resume", flowToken="'+token+'", approve=true. Then spawn the devops agent and call step_complete to finish the pipeline. Execute now.';
+        var stepName=pending&&pending.waitingAtStepId?pending.waitingAtStepId:"the current step";
+        var flowName=pending&&pending.flowName?pending.flowName:"the flow";
+        var msg='[Approved from dashboard] Step "'+stepName+'" in flow "'+flowName+'" has been approved. Call run_task_flow with action="resume", flowToken="'+token+'", approve=true to continue the flow.';
         api("sessions/"+encodeURIComponent(sk)+"/message",{method:"POST",body:JSON.stringify({message:msg,agentId:agentId}),_quiet:true})
-          .then(function(){toast("Flow approved — agent is executing the deploy step","ok")})
+          .then(function(){toast("Flow approved — agent is executing "+stepName,"ok")})
           .catch(function(){toast("Flow approved — tell the agent to continue in chat","ok")});
       }else{
         toast("Flow approved — tell the agent to continue in chat","ok");
@@ -5555,8 +5641,7 @@ function renderScheduledSection(tasks){
 }
 function renderCronJobCard(t){
   var sched=t.schedule||{};
-  var schedKind=sched.kind||t.cron?"cron":(t.every?"interval":(t.at?"one-shot":"unknown"));
-  if(sched.kind)schedKind=sched.kind;
+  var schedKind=sched.kind||(t.cron?"cron":(t.every?"interval":(t.at?"one-shot":"unknown")));
   var isOneShot=schedKind==="at";
   var scheduleLabel="";
   if(schedKind==="cron"&&(sched.expr||t.cron))scheduleLabel=cronToHuman(sched.expr||t.cron);
@@ -5571,39 +5656,45 @@ function renderCronJobCard(t){
   var nextRun=t.state&&t.state.nextRunAtMs?new Date(t.state.nextRunAtMs).toISOString():t.nextRun;
   var lastRun=t.state&&t.state.lastRunAtMs?new Date(t.state.lastRunAtMs).toISOString():t.lastRun;
   var tz=sched.tz||t.tz||"";
-  var h='<div style="background:var(--bg2);border:1px solid var(--border);border-radius:var(--radius);padding:16px 18px">';
-  h+='<div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:8px">';
-  h+='<div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;min-width:0">';
-  h+='<span style="font-size:var(--fs-base);font-weight:600;color:var(--tx1);overflow:hidden;text-overflow:ellipsis;white-space:nowrap">'+esc(t.name||t.id)+'</span>';
+  var h='<div class="cron-card">';
+  // Header row: name+badges left, buttons right (desktop), stacked (mobile)
+  h+='<div class="cron-card-header">';
+  h+='<div class="cron-card-left">';
+  h+='<div class="cron-card-name">'+esc(t.name||t.id)+'</div>';
+  h+='<div class="cron-card-badges">';
   h+='<span class="badge '+(t.enabled===false?"badge-red":"badge-green")+'">'+(t.enabled===false?"disabled":"active")+'</span>';
   if(isOneShot)h+='<span class="badge" style="background:var(--bg3);color:var(--tx3)">one-shot</span>';
   else h+='<span class="badge" style="background:var(--bg3);color:var(--tx3)">'+esc(schedKind)+'</span>';
   h+='</div>';
-  h+='<div style="display:flex;gap:6px;flex-shrink:0">';
+  h+='</div>';
+  h+='<div class="cron-card-actions">';
   h+='<button class="btn btn-sm" onclick="runCronJobNow(\''+esc(t.id)+'\')">▶ Run</button>';
+  h+='<button class="btn btn-sm" onclick="showEditCronJob(\''+esc(t.id)+'\')">✎ Edit</button>';
   h+='<button class="btn btn-sm" onclick="showCronJobRuns(\''+esc(t.id)+'\',\''+esc(t.name||t.id)+'\')">📋 Runs</button>';
   h+='<button class="btn btn-sm btn-danger" onclick="deleteCronJob(\''+esc(t.id)+'\',\''+esc(t.name||t.id)+'\')">✕</button>';
-  h+='</div></div>';
-  h+='<div style="display:flex;gap:16px;flex-wrap:wrap;font-size:var(--fs-sm);color:var(--tx2);margin-bottom:6px">';
+  h+='</div>';
+  h+='</div>';
+  // Meta row
+  h+='<div class="cron-card-meta">';
   if(scheduleLabel)h+='<span>⏰ '+esc(scheduleLabel)+'</span>';
   if(tz)h+='<span>🌍 '+esc(tz)+'</span>';
   h+='<span>📂 '+esc(sessionLabel)+'</span>';
   if(agentId)h+='<span>🤖 '+esc(agentId)+'</span>';
   h+='</div>';
   if(msg){
-    h+='<div style="font-size:var(--fs-sm);color:var(--tx3);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:100%">';
+    h+='<div class="cron-card-msg">';
     h+='💬 '+esc(msg.substring(0,120));
     if(msg.length>120)h+='…';
     h+='</div>';
   }
   if(lastRun||nextRun){
-    h+='<div style="display:flex;gap:16px;flex-wrap:wrap;font-size:var(--fs-xs);color:var(--tx3);margin-top:6px">';
+    h+='<div class="cron-card-times">';
     if(lastRun)h+='<span>Last: '+esc(fmtDate(lastRun))+'</span>';
     if(nextRun)h+='<span>Next: '+esc(fmtDate(nextRun))+'</span>';
     h+='</div>';
   }
   if(delivery.mode&&delivery.mode!=="none"){
-    h+='<div style="font-size:var(--fs-xs);color:var(--tx3);margin-top:4px">';
+    h+='<div class="cron-card-delivery">';
     h+='📤 Delivery: '+esc(delivery.mode);
     if(delivery.channel)h+=' → '+esc(delivery.channel);
     h+='</div>';
@@ -5725,8 +5816,7 @@ function showCreateCronJob(){
     +'<div class="fg-row">'
     +'<div class="fg"><label>Channel</label><select id="cj-channel" onchange="updateCronRecipients()"><option value="">Select a channel\u2026</option></select>'
     +'<div id="cj-channel-help" style="font-size:var(--fs-xs);color:var(--tx3);margin-top:2px"></div></div>'
-    +'<div class="fg"><label>Recipient</label><select id="cj-to"><option value="">Select recipient\u2026</option></select>'
-    +'<div style="font-size:var(--fs-xs);color:var(--tx3);margin-top:2px">The chat/channel/user where the result will be posted</div></div>'
+    +'<div class="fg"><div id="cj-recipient-area"><div style="font-size:var(--fs-xs);color:var(--tx3);padding:8px 0">Pick a channel first to see available recipients.</div></div></div>'
     +'</div></div>'
     +'<div style="display:flex;gap:8px;justify-content:flex-end;margin-top:12px">'
     +'<button class="btn" onclick="closeModal()">Cancel</button>'
@@ -5787,56 +5877,59 @@ function updateCronAgentChannels(){
   sel.innerHTML=h;
   updateCronRecipients();
 }
-/** Rebuild the Recipient dropdown based on the selected agent + channel bindings. */
+/** Rebuild the Recipient area based on the selected agent + channel bindings. */
 function updateCronRecipients(){
-  var sel=Q("cj-to");if(!sel)return;
+  var container=Q("cj-recipient-area");if(!container)return;
   var agentId=V("cj-agent");
   var channel=V("cj-channel");
-  var bindings=D.bindings||[];
 
+  // If no channel selected yet, show placeholder
+  if(!channel){
+    container.innerHTML='<div style="font-size:var(--fs-xs);color:var(--tx3);padding:8px 0">Pick a channel first to see available recipients.</div>';
+    return;
+  }
+
+  var bindings=D.bindings||[];
   // Collect peers for this agent+channel combo
   var peers=[];
   bindings.forEach(function(b){
     if(!b.match||!b.match.channel)return;
     if(agentId&&b.agentId!==agentId)return;
-    if(channel&&b.match.channel!==channel)return;
+    if(b.match.channel!==channel)return;
     var peer=b.match.peer;
     var acc=b.match.accountId||"";
     if(peer&&peer.id){
       var label=peer.id;
-      if(peer.kind)label=peer.kind+":"+peer.id;
-      if(acc)label+=" ("+acc+")";
+      if(peer.kind&&peer.kind!=="channel")label=peer.kind+":"+peer.id;
+      if(acc)label+=" (via "+acc+")";
       peers.push({value:peer.kind?peer.kind+":"+peer.id:peer.id,label:label});
     }
   });
 
-  var h='';
+  var h='<label class="lbl" style="font-size:var(--fs-xs);text-transform:uppercase;letter-spacing:.5px;color:var(--tx3);margin-bottom:4px;display:block">Recipient</label>';
+  h+='<select id="cj-to" onchange="toggleCronManualRecipient()">';
   if(peers.length>0){
     h+='<option value="">Select recipient\u2026</option>';
     peers.forEach(function(p){
       h+='<option value="'+esc(p.value)+'">'+esc(p.label)+'</option>';
     });
+    h+='<option value="__custom__">Custom ID\u2026</option>';
   }else{
-    h+='<option value="">Enter manually below\u2026</option>';
+    h+='<option value="__custom__" selected>Enter channel/user ID</option>';
   }
-  // Always allow manual entry via a text input as fallback
-  sel.innerHTML=h;
-
-  // Show/hide manual input
-  var manualEl=Q("cj-to-manual");
-  if(!manualEl){
-    // Create manual input after the select if it doesn't exist
-    var wrapper=sel.parentElement;
-    if(wrapper){
-      var existing=wrapper.querySelector("#cj-to-manual");
-      if(!existing){
-        var inp=document.createElement("input");
-        inp.id="cj-to-manual";
-        inp.placeholder="Or type ID manually (e.g. -1001234567890)";
-        inp.style.cssText="margin-top:4px";
-        wrapper.insertBefore(inp,sel.nextSibling);
-      }
-    }
+  h+='</select>';
+  h+='<div id="cj-to-manual-wrap" style="'+(peers.length>0?'display:none':'')+'">';
+  h+='<input id="cj-to-manual" placeholder="Channel or user ID (e.g. -1001234567890)" style="margin-top:4px" />';
+  h+='</div>';
+  h+='<div style="font-size:var(--fs-xs);color:var(--tx3);margin-top:2px">Where the result will be posted after the job finishes</div>';
+  container.innerHTML=h;
+}
+function toggleCronManualRecipient(){
+  var sel=Q("cj-to");if(!sel)return;
+  var wrap=Q("cj-to-manual-wrap");if(!wrap)return;
+  wrap.style.display=sel.value==="__custom__"?"":"none";
+  if(sel.value==="__custom__"){
+    var inp=Q("cj-to-manual");if(inp)inp.focus();
   }
 }
 function toggleCronFields(){
@@ -5888,15 +5981,21 @@ function doCreateCronJob(){
   var agentId=V("cj-agent");if(agentId)body.agentId=agentId;
   var msg=Q("cj-message").value.trim();
   if(body.session==="main"){body.systemEvent=msg;body.wake="now";}
-  else{body.message=msg;}
+  else{
+    if(!msg){toast("Message / prompt is required for isolated session jobs","err");return}
+    body.message=msg;
+  }
   var delivery=V("cj-delivery");
   if(delivery==="announce"){
     body.announce=true;
     body.channel=V("cj-channel").trim();
-    // Prefer select value, fall back to manual input
-    var toVal=V("cj-to").trim();
-    var manualEl=Q("cj-to-manual");
-    if(!toVal&&manualEl)toVal=manualEl.value.trim();
+    // Read recipient: use select value unless it's __custom__, then use manual input
+    var toSel=Q("cj-to");
+    var toVal=toSel?toSel.value:"";
+    if(toVal==="__custom__"||!toVal){
+      var manualEl=Q("cj-to-manual");
+      if(manualEl)toVal=manualEl.value.trim();
+    }
     body.to=toVal;
   }
   api("tasks",{method:"POST",body:JSON.stringify(body)})
@@ -5939,18 +6038,25 @@ function showCronJobRuns(id,name){
       }
       var h='<div style="display:flex;flex-direction:column;gap:8px;max-height:400px;overflow-y:auto">';
       runs.forEach(function(run){
-        var statusBadge='<span class="badge">'+esc(run.status||run.state||"unknown")+'</span>';
-        if(run.status==="success"||run.state==="completed")statusBadge='<span class="badge badge-green">✓ Success</span>';
-        else if(run.status==="failed"||run.state==="failed")statusBadge='<span class="badge badge-red">✗ Failed</span>';
-        else if(run.status==="running"||run.state==="running")statusBadge='<span class="badge badge-blue">Running</span>';
+        var st=run.status||run.state||"unknown";
+        var statusBadge='<span class="badge">'+esc(st)+'</span>';
+        if(st==="ok"||st==="success"||st==="completed")statusBadge='<span class="badge badge-green">✓ '+esc(st)+'</span>';
+        else if(st==="failed"||st==="error")statusBadge='<span class="badge badge-red">✗ '+esc(st)+'</span>';
+        else if(st==="running")statusBadge='<span class="badge badge-blue">Running</span>';
+        // Timestamp: prefer runAtMs, then ts, then startedAt
+        var ts=run.runAtMs?new Date(run.runAtMs).toISOString():(run.ts?new Date(run.ts).toISOString():(run.startedAt||run.createdAt||""));
+        // Duration
+        var dur=run.durationMs?((run.durationMs/1000).toFixed(1)+"s"):(run.duration||"");
         h+='<div style="padding:10px 14px;background:var(--bg2);border:1px solid var(--border);border-radius:var(--radius)">';
-        h+='<div style="display:flex;align-items:center;gap:8px;margin-bottom:4px">';
+        h+='<div style="display:flex;align-items:center;gap:8px;margin-bottom:4px;flex-wrap:wrap">';
         h+=statusBadge;
-        h+='<span style="font-size:var(--fs-sm);color:var(--tx3)">'+esc(fmtDate(run.startedAt||run.createdAt||run.timestamp))+'</span>';
-        if(run.duration)h+='<span style="font-size:var(--fs-sm);color:var(--tx3)">'+esc(run.duration)+'</span>';
+        if(ts)h+='<span style="font-size:var(--fs-sm);color:var(--tx3)">'+esc(fmtDate(ts))+'</span>';
+        if(dur)h+='<span style="font-size:var(--fs-sm);color:var(--tx3)">⏱ '+esc(dur)+'</span>';
+        if(run.model)h+='<span style="font-size:var(--fs-sm);color:var(--tx3)">🧠 '+esc(run.model)+'</span>';
+        if(run.delivered)h+='<span style="font-size:var(--fs-sm);color:var(--green)">📤 delivered</span>';
         h+='</div>';
         if(run.error)h+='<div style="font-size:var(--fs-sm);color:var(--red)">'+esc(run.error)+'</div>';
-        if(run.summary)h+='<div style="font-size:var(--fs-sm);color:var(--tx2)">'+esc(run.summary.substring(0,200))+'</div>';
+        if(run.summary)h+='<div style="font-size:var(--fs-sm);color:var(--tx2);margin-top:4px">'+esc(run.summary.substring(0,300))+'</div>';
         h+='</div>';
       });
       h+='</div>';
@@ -5960,6 +6066,216 @@ function showCronJobRuns(id,name){
       var el=Q("cron-runs-body");
       if(el)el.innerHTML='<div style="color:var(--red);padding:20px">Failed to load runs: '+esc(e.message)+'</div>';
     });
+}
+
+function showEditCronJob(id){
+  var t=null;
+  for(var i=0;i<_tasksCache.length;i++){if(_tasksCache[i].id===id){t=_tasksCache[i];break}}
+  if(!t){toast("Job not found","err");return}
+  var sched=t.schedule||{};
+  var schedKind=sched.kind||(t.cron?"cron":(t.every?"every":(t.at?"at":"cron")));
+  var schedExpr=sched.expr||t.cron||"";
+  var schedInterval=sched.interval||t.every||"";
+  var payload=t.payload||{};
+  var msg=payload.message||t.message||payload.systemEvent||t.systemEvent||"";
+  var agentId=t.agentId||t.agent||"";
+  var delivery=t.delivery||{};
+  var tz=sched.tz||t.tz||"";
+
+  // Store current delivery values for pre-selection after dropdowns render
+  _editCronDelivery={channel:delivery.channel||"",to:delivery.to||""};
+
+  var agents=D.agents||[];
+  var agentOpts='<option value="">— default agent —</option>';
+  agents.forEach(function(a){agentOpts+='<option value="'+esc(a.id)+'"'+(a.id===agentId?' selected':'')+'>'+esc(a.name||a.id)+'</option>'});
+  var presetHtml='<div style="display:flex;flex-wrap:wrap;gap:6px;margin-bottom:4px">';
+  CRON_PRESETS.forEach(function(p,i){
+    presetHtml+='<button class="btn btn-sm" onclick="applyEditCronPreset('+i+')">'+esc(p.label)+'</button>';
+  });
+  presetHtml+='</div>';
+  var tzOpts='';
+  COMMON_TIMEZONES.forEach(function(tzItem){
+    tzOpts+='<option value="'+esc(tzItem.value)+'"'+(tzItem.value===tz?' selected':'')+'>'+esc(tzItem.label)+'</option>';
+  });
+  var deliveryMode=delivery.mode==="announce"?"announce":"none";
+
+  openModal("Edit Cron Job",
+    '<div class="fg"><label>Job Name</label><input id="cej-name" value="'+esc(t.name||"")+'" /></div>'
+    +'<div class="fg"><label>Schedule Type</label>'
+    +'<select id="cej-sched-type" onchange="toggleEditCronFields()">'
+    +'<option value="cron"'+(schedKind==="cron"?" selected":"")+'>Cron expression</option>'
+    +'<option value="every"'+(schedKind==="every"?" selected":"")+'>Fixed interval</option>'
+    +'</select></div>'
+    +'<div id="cej-cron-fields"'+(schedKind!=="cron"?' style="display:none"':'')+'>'
+    +'<div class="fg"><label>Cron Expression</label>'+presetHtml
+    +'<input id="cej-cron" value="'+esc(schedExpr)+'" oninput="updateEditCronPreview()" />'
+    +'<div id="cej-cron-preview" style="font-size:var(--fs-xs);color:var(--tx3);margin-top:4px">'+esc(cronToHuman(schedExpr))+'</div></div>'
+    +'</div>'
+    +'<div id="cej-every-fields"'+(schedKind!=="every"?' style="display:none"':'')+'>'
+    +'<div class="fg"><label>Interval</label><input id="cej-every" value="'+esc(schedInterval)+'" /></div>'
+    +'</div>'
+    +'<div class="fg"><label>Timezone</label><select id="cej-tz">'+tzOpts+'</select></div>'
+    +'<div class="fg"><label>Agent</label><select id="cej-agent" onchange="updateEditCronChannels()">'+agentOpts+'</select></div>'
+    +'<div class="fg"><label>Message / Prompt</label>'
+    +'<textarea id="cej-message" rows="3">'+esc(msg)+'</textarea></div>'
+    +'<div class="fg"><label>Delivery</label>'
+    +'<select id="cej-delivery" onchange="toggleEditAnnounceFields()">'
+    +'<option value="none"'+(deliveryMode!=="announce"?" selected":"")+'>No delivery</option>'
+    +'<option value="announce"'+(deliveryMode==="announce"?" selected":"")+'>Send result to a channel</option>'
+    +'</select></div>'
+    +'<div id="cej-announce-fields"'+(deliveryMode!=="announce"?' style="display:none"':'')+'>'
+    +'<div class="fg-row">'
+    +'<div class="fg"><label>Channel</label><select id="cej-channel" onchange="updateEditCronRecipients()"><option value="">Select a channel\u2026</option></select>'
+    +'<div id="cej-channel-help" style="font-size:var(--fs-xs);color:var(--tx3);margin-top:2px"></div></div>'
+    +'<div class="fg"><div id="cej-recipient-area"><div style="font-size:var(--fs-xs);color:var(--tx3);padding:8px 0">Pick a channel first.</div></div></div>'
+    +'</div></div>'
+    +'<div style="display:flex;gap:8px;justify-content:flex-end;margin-top:12px">'
+    +'<button class="btn" onclick="closeModal()">Cancel</button>'
+    +'<button class="btn btn-accent" onclick="doEditCronJob(\''+esc(id)+'\')">Save Changes</button></div>');
+  // Populate channel dropdown with pre-selection
+  updateEditCronChannels();
+}
+var _editCronDelivery={channel:"",to:""};
+function updateEditCronChannels(){
+  var sel=Q("cej-channel");if(!sel)return;
+  var agentId=V("cej-agent");
+  var bindings=D.bindings||[];
+  var help=Q("cej-channel-help");
+  var preselect=_editCronDelivery.channel;
+  var chSet={};
+  bindings.forEach(function(b){
+    if(!b.match||!b.match.channel)return;
+    if(agentId&&b.agentId!==agentId)return;
+    chSet[b.match.channel]=true;
+  });
+  var chNames=Object.keys(chSet);
+  var CH_ICONS={whatsapp:"\uD83D\uDCAC",telegram:"\u2708\uFE0F",discord:"\uD83C\uDFAE",slack:"\uD83D\uDCBC",signal:"\uD83D\uDD12",matrix:"\uD83D\uDD37",webchat:"\uD83C\uDF10"};
+  var h='<option value="">Select a channel\u2026</option>';
+  if(chNames.length>0){
+    chNames.forEach(function(ch){
+      var icon=CH_ICONS[ch]||"\uD83D\uDCE1";
+      h+='<option value="'+esc(ch)+'"'+(ch===preselect?' selected':'')+'>'+icon+' '+esc(ch)+'</option>';
+    });
+    if(help)help.textContent=agentId?"Showing channels "+agentId+" has access to.":"Showing all configured channels.";
+  }else{
+    var allCh=Object.keys(D.channels||{});
+    if(allCh.length>0){
+      allCh.forEach(function(ch){h+='<option value="'+esc(ch)+'"'+(ch===preselect?' selected':'')+'>'+esc(ch)+'</option>'});
+      if(help)help.textContent="Pick an agent to see only their connected channels.";
+    }else{
+      if(help)help.textContent="No channels configured.";
+    }
+  }
+  sel.innerHTML=h;
+  updateEditCronRecipients();
+}
+function updateEditCronRecipients(){
+  var container=Q("cej-recipient-area");if(!container)return;
+  var agentId=V("cej-agent");
+  var channel=V("cej-channel");
+  var preselect=_editCronDelivery.to;
+  if(!channel){
+    container.innerHTML='<div style="font-size:var(--fs-xs);color:var(--tx3);padding:8px 0">Pick a channel first.</div>';
+    return;
+  }
+  var bindings=D.bindings||[];
+  var peers=[];
+  bindings.forEach(function(b){
+    if(!b.match||!b.match.channel)return;
+    if(agentId&&b.agentId!==agentId)return;
+    if(b.match.channel!==channel)return;
+    var peer=b.match.peer;
+    var acc=b.match.accountId||"";
+    if(peer&&peer.id){
+      var label=peer.id;
+      if(peer.kind&&peer.kind!=="channel")label=peer.kind+":"+peer.id;
+      if(acc)label+=" (via "+acc+")";
+      peers.push({value:peer.kind?peer.kind+":"+peer.id:peer.id,label:label});
+    }
+  });
+  var h='<label class="lbl" style="font-size:var(--fs-xs);text-transform:uppercase;letter-spacing:.5px;color:var(--tx3);margin-bottom:4px;display:block">Recipient</label>';
+  h+='<select id="cej-to" onchange="toggleEditManualRecipient()">';
+  if(peers.length>0){
+    h+='<option value="">Select recipient\u2026</option>';
+    peers.forEach(function(p){
+      h+='<option value="'+esc(p.value)+'"'+(p.value===preselect?' selected':'')+'>'+esc(p.label)+'</option>';
+    });
+    h+='<option value="__custom__">Custom ID\u2026</option>';
+  }else{
+    h+='<option value="__custom__" selected>Enter channel/user ID</option>';
+  }
+  h+='</select>';
+  // If preselect doesn't match any peer, show manual input with the value
+  var matched=peers.some(function(p){return p.value===preselect});
+  var showManual=!matched&&preselect;
+  h+='<div id="cej-to-manual-wrap" style="'+(showManual?'':'display:none')+'">';
+  h+='<input id="cej-to-manual" value="'+esc(showManual?preselect:'')+'" placeholder="Channel or user ID" style="margin-top:4px" />';
+  h+='</div>';
+  h+='<div style="font-size:var(--fs-xs);color:var(--tx3);margin-top:2px">Where the result will be posted</div>';
+  container.innerHTML=h;
+  // If preselect didn't match, select __custom__
+  if(showManual){
+    var toSel=Q("cej-to");
+    if(toSel){for(var i=0;i<toSel.options.length;i++){if(toSel.options[i].value==="__custom__"){toSel.selectedIndex=i;break}}}
+  }
+}
+function toggleEditManualRecipient(){
+  var sel=Q("cej-to");if(!sel)return;
+  var wrap=Q("cej-to-manual-wrap");if(!wrap)return;
+  wrap.style.display=sel.value==="__custom__"?"":"none";
+  if(sel.value==="__custom__"){var inp=Q("cej-to-manual");if(inp)inp.focus();}
+}
+function toggleEditCronFields(){
+  var type=V("cej-sched-type");
+  var cf=Q("cej-cron-fields"),ef=Q("cej-every-fields");
+  if(cf)cf.style.display=type==="cron"?"":"none";
+  if(ef)ef.style.display=type==="every"?"":"none";
+}
+function toggleEditAnnounceFields(){
+  var show=V("cej-delivery")==="announce";
+  var af=Q("cej-announce-fields");if(af)af.style.display=show?"":"none";
+}
+function applyEditCronPreset(idx){
+  var p=CRON_PRESETS[idx];if(!p)return;
+  var inp=Q("cej-cron");if(inp)inp.value=p.cron;
+  updateEditCronPreview();
+}
+function updateEditCronPreview(){
+  var prev=Q("cej-cron-preview");
+  if(prev)prev.textContent=cronToHuman(V("cej-cron"));
+}
+function doEditCronJob(id){
+  var body={};
+  var name=V("cej-name").trim();if(name)body.name=name;
+  var schedType=V("cej-sched-type");
+  if(schedType==="cron"){
+    var cron=V("cej-cron").trim();if(cron)body.cron=cron;
+  }else if(schedType==="every"){
+    var every=V("cej-every").trim();if(every)body.every=every;
+  }
+  var msg=Q("cej-message").value.trim();if(msg)body.message=msg;
+  var tz=V("cej-tz").trim();if(tz)body.tz=tz;
+  var delivery=V("cej-delivery");
+  if(delivery==="announce"){
+    body.announce=true;
+    var ch=V("cej-channel").trim();if(ch)body.channel=ch;
+    // Read recipient: use select value unless it's __custom__, then use manual input
+    var toSel=Q("cej-to");
+    var toVal=toSel?toSel.value:"";
+    if(toVal==="__custom__"||!toVal){
+      var manualEl=Q("cej-to-manual");
+      if(manualEl)toVal=manualEl.value.trim();
+    }
+    if(toVal&&toVal!=="__custom__")body.to=toVal;
+  }else{
+    body.announce=false;
+  }
+  api("tasks/"+encodeURIComponent(id)+"/edit",{method:"POST",body:JSON.stringify(body)})
+    .then(function(r){
+      if(r.error){toast(r.error,"err");return}
+      toast("Cron job updated","ok");closeModal();showTasksPage();
+    })
+    .catch(function(e){toast(e.message,"err")});
 }
 
 // ── Workflow Executions (Tasks Pane) ──
