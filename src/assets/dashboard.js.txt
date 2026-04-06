@@ -3463,7 +3463,7 @@ function collectAccountData(chName,idx){
           if(chansEl&&chansEl.value.trim()){
             gObj.channels={};
             chansEl.value.split(",").map(function(s){return s.trim()}).filter(Boolean).forEach(function(cid){
-              gObj.channels[cid]={allow:true};
+              gObj.channels[cid]={enabled:true};
             });
           }
           obj.guilds[gid]=gObj;
@@ -3902,7 +3902,7 @@ function saveAccountConfig(chName,accName){
           if(chansEl&&chansEl.value.trim()){
             gObj.channels={};
             chansEl.value.split(",").map(function(s){return s.trim()}).filter(Boolean).forEach(function(cid){
-              gObj.channels[cid]={allow:true};
+              gObj.channels[cid]={enabled:true};
             });
           }
           obj.guilds[gid]=gObj;

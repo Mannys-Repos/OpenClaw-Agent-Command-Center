@@ -1584,11 +1584,17 @@ export async function handleApiRequest(req: IncomingMessage, res: ServerResponse
         // Gateway status + sessions — async to avoid blocking the event loop
         const [gatewayStatus, cliSessions] = await Promise.all([
             execAsync("openclaw status --json", { timeout: 8000 }).then((out) => {
-                try { return JSON.parse((out || "{}").trim()); } catch { return {}; }
-            }),
+                try {
+                    const raw = (out || "{}").trim();
+                    const jsonStart = raw.indexOf("{");
+                    return JSON.parse(jsonStart >= 0 ? raw.slice(jsonStart) : raw);
+                } catch { return {}; }
+            }).catch(() => ({})),
             execAsync("openclaw sessions --all-agents --json", { timeout: 10000 }).then((out) => {
                 try {
-                    const p = JSON.parse((out || "{}").trim());
+                    const raw = (out || "{}").trim();
+                    const jsonStart = raw.indexOf("{");
+                    const p = JSON.parse(jsonStart >= 0 ? raw.slice(jsonStart) : raw);
                     return (p.sessions || []).map((s: any) => {
                         let messageCount = 0;
                         const sid = s.sessionId;
@@ -1619,7 +1625,7 @@ export async function handleApiRequest(req: IncomingMessage, res: ServerResponse
                         };
                     });
                 } catch { return []; }
-            }),
+            }).catch(() => []),
         ]);
 
         // Use CLI sessions directly (already enriched with message counts)

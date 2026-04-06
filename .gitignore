@@ -9,3 +9,6 @@ server.md
 *.env
 .env*
 .deploy.env
+
+# Deploy/ops scripts (contain server IPs, usernames, SSH details)
+scripts/
