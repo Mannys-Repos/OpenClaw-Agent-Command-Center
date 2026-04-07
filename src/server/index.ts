@@ -37,7 +37,17 @@ function getLogo(): Buffer {
     return _LOGO;
 }
 
+// ── Guard against the gateway re-invoking register() in a tight loop ──
+// (e.g. a file-watcher on ~/.openclaw/extensions/ fires when we mkdir below)
+let _registered = false;
+
 export default function register(api: any) {
+    if (_registered) {
+        api.logger.warn("[agent-dashboard] register() called again — skipping (already registered)");
+        return;
+    }
+    _registered = true;
+
     api.logger.info("[agent-dashboard] Loading Agent Dashboard plugin...");
 
     const config = api.config?.plugins?.entries?.["agent-dashboard"]?.config ?? {};
@@ -313,6 +323,11 @@ export default function register(api: any) {
     api.registerService({
         id: "agent-dashboard",
         start: async () => {
+            // Create flow directories here (not at registration time) to avoid
+            // triggering gateway file-watchers that re-load all plugins.
+            try { if (!existsSync(FLOW_STATE_DIR)) mkdirSync(FLOW_STATE_DIR, { recursive: true }); } catch { }
+            try { if (!existsSync(FLOW_HISTORY_DIR)) mkdirSync(FLOW_HISTORY_DIR, { recursive: true }); } catch { }
+
             await initSessionIndex();
             startServer();
         },
@@ -337,9 +352,8 @@ export default function register(api: any) {
     const FLOW_STATE_DIR = join(PLUGIN_DIR, "Tasks", "flows", "state");
     const FLOW_HISTORY_DIR = join(PLUGIN_DIR, "Tasks", "flows", "history");
 
-    // Ensure directories exist
-    try { if (!existsSync(FLOW_STATE_DIR)) mkdirSync(FLOW_STATE_DIR, { recursive: true }); } catch { }
-    try { if (!existsSync(FLOW_HISTORY_DIR)) mkdirSync(FLOW_HISTORY_DIR, { recursive: true }); } catch { }
+    // Ensure directories exist — deferred to service start() to avoid triggering
+    // gateway file-watchers during plugin registration.
 
     // Flow execution state persisted to disk
     interface FlowExecState {

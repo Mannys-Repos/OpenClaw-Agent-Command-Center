@@ -39,7 +39,16 @@ function getDashboardJS(): string {
 }
 
 // Favicon is small enough to inline; logo + iOS icon served as separate URLs
-const FAVICON_B64 = readFileSync(resolveAsset("favicon.png")).toString("base64");
+// Lazy-loaded to avoid disk I/O at module evaluation time (which runs on every
+// gateway plugin reload and can contribute to tight re-init loops).
+let _FAVICON_B64: string | null = null;
+function getFaviconB64(): string {
+  if (_FAVICON_B64 === null) {
+    try { _FAVICON_B64 = readFileSync(resolveAsset("favicon.png")).toString("base64"); }
+    catch { _FAVICON_B64 = ""; }
+  }
+  return _FAVICON_B64;
+}
 
 function logoImgTag(size: number): string {
   return '<img src="/logo.png" width="' + size + '" height="' + size + '" alt="OpenClaw" class="logo-img" loading="eager">';
@@ -59,7 +68,7 @@ export function buildDashboardHTML(title: string): string {
     + '<link rel="manifest" href="/manifest.json">\n'
     + '<link rel="apple-touch-icon" sizes="180x180" href="/ios-icon.png">\n'
     + '<title>' + t + '</title>\n'
-    + '<link rel="icon" type="image/png" href="data:image/png;base64,' + FAVICON_B64 + '">\n'
+    + '<link rel="icon" type="image/png" href="data:image/png;base64,' + getFaviconB64() + '">\n'
     + '<link rel="stylesheet" href="/dashboard.css">\n</head>\n<body>\n'
     // Topbar — lean: logo + primary actions only
     + '<header id="topbar">'
