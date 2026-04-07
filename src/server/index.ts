@@ -37,16 +37,14 @@ function getLogo(): Buffer {
     return _LOGO;
 }
 
-// ── Guard against the gateway re-invoking register() in a tight loop ──
-// (e.g. a file-watcher on ~/.openclaw/extensions/ fires when we mkdir below)
-let _registered = false;
+// ── Guard: track whether service has been registered ──
+let _serviceRegistered = false;
+let _serverStarted = false;
 
 export default function register(api: any) {
-    if (_registered) {
-        api.logger.warn("[agent-dashboard] register() called again — skipping (already registered)");
-        return;
-    }
-    _registered = true;
+    // Only register service/tools/RPC once — gateway calls register() per agent
+    if (_serviceRegistered) return;
+    _serviceRegistered = true;
 
     api.logger.info("[agent-dashboard] Loading Agent Dashboard plugin...");
 
@@ -319,28 +317,6 @@ export default function register(api: any) {
         (api as any)._dashboardServer = server;
     }
 
-    // Register as a background service — runs its own HTTP server
-    api.registerService({
-        id: "agent-dashboard",
-        start: async () => {
-            // Create flow directories here (not at registration time) to avoid
-            // triggering gateway file-watchers that re-load all plugins.
-            try { if (!existsSync(FLOW_STATE_DIR)) mkdirSync(FLOW_STATE_DIR, { recursive: true }); } catch { }
-            try { if (!existsSync(FLOW_HISTORY_DIR)) mkdirSync(FLOW_HISTORY_DIR, { recursive: true }); } catch { }
-
-            await initSessionIndex();
-            startServer();
-        },
-        stop: () => {
-            const server = _currentServer ?? (api as any)._dashboardServer;
-            if (server) {
-                server.close();
-                _currentServer = null;
-                api.logger.info("[agent-dashboard] Dashboard server stopped");
-            }
-        },
-    });
-
     // Register RPC methods so gateway knows about us
     api.registerGatewayMethod("dashboard.status", ({ respond }: any) => {
         respond(true, { ok: true, plugin: "agent-dashboard", version: "1.0.0", port });
@@ -351,6 +327,53 @@ export default function register(api: any) {
     const TASKS_DIR = join(PLUGIN_DIR, "Tasks", "flows", "definitions");
     const FLOW_STATE_DIR = join(PLUGIN_DIR, "Tasks", "flows", "state");
     const FLOW_HISTORY_DIR = join(PLUGIN_DIR, "Tasks", "flows", "history");
+
+    // Register as a background service — runs its own HTTP server
+    if (typeof api.registerService === "function") {
+        api.registerService({
+            id: "agent-dashboard",
+            start: async () => {
+                if (_serverStarted) return;
+                _serverStarted = true;
+                try { if (!existsSync(FLOW_STATE_DIR)) mkdirSync(FLOW_STATE_DIR, { recursive: true }); } catch { }
+                try { if (!existsSync(FLOW_HISTORY_DIR)) mkdirSync(FLOW_HISTORY_DIR, { recursive: true }); } catch { }
+                await initSessionIndex();
+                startServer();
+            },
+            stop: () => {
+                const server = _currentServer ?? (api as any)._dashboardServer;
+                if (server) {
+                    server.close();
+                    _currentServer = null;
+                    _serverStarted = false;
+                    api.logger.info("[agent-dashboard] Dashboard server stopped");
+                }
+            },
+        });
+
+        // Safety net: if the gateway doesn't call start() within 10s, start directly
+        setTimeout(() => {
+            if (!_serverStarted) {
+                api.logger.warn("[agent-dashboard] Gateway did not call service start() — starting server directly");
+                _serverStarted = true;
+                (async () => {
+                    try { if (!existsSync(FLOW_STATE_DIR)) mkdirSync(FLOW_STATE_DIR, { recursive: true }); } catch { }
+                    try { if (!existsSync(FLOW_HISTORY_DIR)) mkdirSync(FLOW_HISTORY_DIR, { recursive: true }); } catch { }
+                    await initSessionIndex();
+                    startServer();
+                })();
+            }
+        }, 10_000);
+    } else if (!_serverStarted) {
+        _serverStarted = true;
+        api.logger.warn("[agent-dashboard] api.registerService not available — starting server directly");
+        (async () => {
+            try { if (!existsSync(FLOW_STATE_DIR)) mkdirSync(FLOW_STATE_DIR, { recursive: true }); } catch { }
+            try { if (!existsSync(FLOW_HISTORY_DIR)) mkdirSync(FLOW_HISTORY_DIR, { recursive: true }); } catch { }
+            await initSessionIndex();
+            startServer();
+        })();
+    }
 
     // Ensure directories exist — deferred to service start() to avoid triggering
     // gateway file-watchers during plugin registration.

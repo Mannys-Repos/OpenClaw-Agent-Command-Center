@@ -958,7 +958,7 @@ function drawRelMap(){
       var infraId="infra:embeddings";
       infraNodes.push({id:infraId,name:infraLabel,icon:"🧬"});
       var tw=measureText(infraLabel,"600 "+CH_FONT+"px -apple-system,BlinkMacSystemFont,sans-serif");
-      var infraW=Math.max(120,Math.round(tw+CH_PAD_H*2+44));
+      var infraW=Math.max(120,Math.round(tw+40+44+44));
       // Position to the right of channels, or centered if no channels
       var infraY=chNodes.length>0?pos[chNodes[0].id].y:((function(){var my=0;agents.forEach(function(a){if(pos[a.id]&&pos[a.id].y+pos[a.id].h>my)my=pos[a.id].y+pos[a.id].h});return my+PADY})());
       var allXs=Object.values(pos).map(function(p){return p.x+p.w/2});
@@ -1164,7 +1164,7 @@ function drawRelMap(){
     n.style.cssText="position:absolute;left:"+p.x+"px;top:"+p.y+"px;width:"+p.w+"px;height:"+p.h+"px;"
       +"background:#0d1520;border:1.5px dashed #6a5acd;border-radius:8px;"
       +"display:flex;flex-direction:row;align-items:center;justify-content:center;gap:8px;"
-      +"user-select:none;cursor:default;opacity:0.85;padding:0 14px;box-sizing:border-box";
+      +"user-select:none;cursor:default;opacity:0.85;padding:0 32px;box-sizing:border-box";
     n.innerHTML='<span class="rn-icon">'+esc(inf.icon)+'</span>'
       +'<span class="ch-node-label infra">'+esc(inf.name)+'</span>';
     domLayer.appendChild(n);
