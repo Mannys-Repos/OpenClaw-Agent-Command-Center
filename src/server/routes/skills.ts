@@ -68,7 +68,7 @@ export function syncSkillsToWorkspace(agentId: string, config?: any): void {
                     const parsed = parseSkillMd(content);
                     const relPath = base === wsSkillsDir
                         ? `skills/${entry}/SKILL.md`
-                        : join(managedSkillsDir, entry, "SKILL.md");
+                        : `~/.openclaw/skills/${entry}/SKILL.md`;
                     const desc = parsed.description ? ` — ${parsed.description}` : "";
                     lines.push(`- **${parsed.name || entry}**${desc}  \n  → \`${relPath}\``);
                 } catch { }

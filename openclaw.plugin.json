@@ -1,5 +1,6 @@
 {
     "id": "agent-dashboard",
+    "kind": "tools",
     "name": "OpenClaw Agent Dashboard",
     "version": "1.0.0",
     "description": "A comprehensive dashboard for managing OpenClaw agents, sessions, configurations, and agent relationships",

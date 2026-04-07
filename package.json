@@ -15,6 +15,12 @@
     "openclaw": {
         "extensions": [
             "./dist/server/index.js"
+        ],
+        "tools": [
+            {
+                "name": "run_task_flow",
+                "description": "Orchestrate a multi-step task flow across agents. Actions: run (start flow), step_complete (advance), resume (after approval gate)."
+            }
         ]
     },
     "peerDependencies": {

@@ -82,16 +82,34 @@ export default function register(api: any) {
     }
 
     // EADDRINUSE retry state
-    const BACKOFF_DELAYS = [1000, 2000, 4000, 8000, 16000, 30000];
+    const BACKOFF_DELAYS = [1000, 2000, 4000];
     let _retryCount = 0;
     let _currentServer: ReturnType<typeof createServer> | null = null;
 
+    /** Forcefully shut down the HTTP server — close all connections immediately. */
+    function destroyServer(): void {
+        const server = _currentServer ?? (api as any)._dashboardServer;
+        if (!server) return;
+        try {
+            // closeAllConnections() is available in Node 18.2+ — kills keep-alive sockets
+            if (typeof server.closeAllConnections === "function") {
+                server.closeAllConnections();
+            }
+            server.close();
+        } catch { }
+        _currentServer = null;
+        (api as any)._dashboardServer = null;
+    }
+
+    // Ensure the server is torn down when the process exits (gateway restart / SIGTERM)
+    function _onProcessExit() { destroyServer(); }
+    process.once("SIGTERM", _onProcessExit);
+    process.once("SIGINT", _onProcessExit);
+    process.once("exit", _onProcessExit);
+
     function startServer() {
         // Guard: close existing server before creating a new one
-        if (_currentServer) {
-            try { _currentServer.close(); } catch { }
-            _currentServer = null;
-        }
+        destroyServer();
 
         const server = createServer(async (req, res) => {
             const origin = req.headers.origin;
@@ -307,13 +325,15 @@ export default function register(api: any) {
             }
         });
 
-        server.listen(port, bindAddr, () => {
+        server.listen({ port, host: bindAddr, exclusive: false }, () => {
             _retryCount = 0; // reset on successful bind
+            // Short keep-alive so the port is released quickly on restart
+            server.keepAliveTimeout = 3000;
+            server.headersTimeout = 5000;
             api.logger.info(`[agent-dashboard] Dashboard running at http://${bindAddr}:${port}`);
         });
 
         _currentServer = server;
-        // Store ref for cleanup
         (api as any)._dashboardServer = server;
     }
 
@@ -341,16 +361,11 @@ export default function register(api: any) {
                 startServer();
             },
             stop: () => {
-                const server = _currentServer ?? (api as any)._dashboardServer;
-                if (server) {
-                    server.close();
-                    _currentServer = null;
-                    _serverStarted = false;
-                    // Clear in-memory caches to free memory on shutdown
-                    _stateCache.clear();
-                    _flowDefCache.clear();
-                    api.logger.info("[agent-dashboard] Dashboard server stopped");
-                }
+                destroyServer();
+                _serverStarted = false;
+                _stateCache.clear();
+                _flowDefCache.clear();
+                api.logger.info("[agent-dashboard] Dashboard server stopped");
             },
         });
 
