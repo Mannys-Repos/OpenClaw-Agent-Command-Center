@@ -609,7 +609,7 @@ function render(){
   if(!m)return;
   if(!D.agents||D.agents.length===0){
     var zc0=Q("zoom-controls");
-    m.innerHTML='<div class="empty map-empty-center"><div class="empty-icon">🦞</div>No agents configured.<br><br><button class="btn btn-accent" onclick="showCreateAgent()">Create Agent</button></div>';
+    m.innerHTML='<div class="empty map-empty-center"><div class="empty-icon">🦞</div>No agents configured.<br><span class="section-desc">Or refresh the page — connection to server may have been lost.</span><br><br><button class="btn btn-accent" onclick="showCreateAgent()">Create Agent</button></div>';
     if(zc0)m.appendChild(zc0);
     renderAgentList();
     return;

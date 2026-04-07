@@ -42,338 +42,354 @@ let _serviceRegistered = false;
 let _serverStarted = false;
 
 export default function register(api: any) {
-    // Only register service/tools/RPC once — gateway calls register() per agent
-    if (_serviceRegistered) return;
+    // The gateway calls register() once per agent. Tools must be registered
+    // for each agent context, but the HTTP server only needs to start once.
+    const isFirstCall = !_serviceRegistered;
     _serviceRegistered = true;
 
-    api.logger.info("[agent-dashboard] Loading Agent Dashboard plugin...");
+    if (isFirstCall) {
+        api.logger.info("[agent-dashboard] Loading Agent Dashboard plugin...");
 
-    const config = api.config?.plugins?.entries?.["agent-dashboard"]?.config ?? {};
-    const port = config.port ?? 19900;
-    const title = config.title ?? "OpenClaw Command Center";
+        const config = api.config?.plugins?.entries?.["agent-dashboard"]?.config ?? {};
+        const port = config.port ?? 19900;
+        const title = config.title ?? "OpenClaw Command Center";
 
-    // Bind address — defaults to 0.0.0.0 so the dashboard is reachable remotely.
-    // Override with config.bind if you want to restrict (e.g. "127.0.0.1").
-    const bindAddr: string = config.bind ?? "0.0.0.0";
+        // Bind address — defaults to 0.0.0.0 so the dashboard is reachable remotely.
+        // Override with config.bind if you want to restrict (e.g. "127.0.0.1").
+        const bindAddr: string = config.bind ?? "0.0.0.0";
 
-    // Allowed origins for CORS and API access control.
-    // By default: localhost + the server's own addresses. Extra origins can be
-    // added via config.allowedOrigins (array of strings).
-    const extraOrigins: string[] = config.allowedOrigins ?? [];
-    const allowedOriginSet = new Set([
-        `http://localhost:${port}`,
-        `http://127.0.0.1:${port}`,
-        ...extraOrigins,
-    ]);
-    // If binding to a specific non-loopback address, allow that too
-    if (bindAddr !== "127.0.0.1" && bindAddr !== "0.0.0.0") {
-        allowedOriginSet.add(`http://${bindAddr}:${port}`);
-    }
+        // Allowed origins for CORS and API access control.
+        // By default: localhost + the server's own addresses. Extra origins can be
+        // added via config.allowedOrigins (array of strings).
+        const extraOrigins: string[] = config.allowedOrigins ?? [];
+        const allowedOriginSet = new Set([
+            `http://localhost:${port}`,
+            `http://127.0.0.1:${port}`,
+            ...extraOrigins,
+        ]);
+        // If binding to a specific non-loopback address, allow that too
+        if (bindAddr !== "127.0.0.1" && bindAddr !== "0.0.0.0") {
+            allowedOriginSet.add(`http://${bindAddr}:${port}`);
+        }
 
-    function isOriginAllowed(origin: string | undefined): boolean {
-        if (!origin) return true; // same-origin requests (no Origin header)
-        if (allowedOriginSet.has(origin)) return true;
-        // Auto-allow any origin that targets our own port (the dashboard calling its own API)
-        try {
-            const u = new URL(origin);
-            if (String(u.port || 80) === String(port)) return true;
-        } catch { }
-        return false;
-    }
+        function isOriginAllowed(origin: string | undefined): boolean {
+            if (!origin) return true; // same-origin requests (no Origin header)
+            if (allowedOriginSet.has(origin)) return true;
+            // Auto-allow any origin that targets our own port (the dashboard calling its own API)
+            try {
+                const u = new URL(origin);
+                if (String(u.port || 80) === String(port)) return true;
+            } catch { }
+            return false;
+        }
 
-    // EADDRINUSE retry state
-    const BACKOFF_DELAYS = [1000, 2000, 4000];
-    let _retryCount = 0;
-    let _currentServer: ReturnType<typeof createServer> | null = null;
+        // EADDRINUSE retry state
+        const BACKOFF_DELAYS = [1000, 2000, 4000];
+        let _retryCount = 0;
+        let _currentServer: ReturnType<typeof createServer> | null = null;
 
-    /** Forcefully shut down the HTTP server — close all connections immediately. */
-    function destroyServer(): void {
-        const server = _currentServer ?? (api as any)._dashboardServer;
-        if (!server) return;
-        try {
-            // closeAllConnections() is available in Node 18.2+ — kills keep-alive sockets
-            if (typeof server.closeAllConnections === "function") {
-                server.closeAllConnections();
-            }
-            server.close();
-        } catch { }
-        _currentServer = null;
-        (api as any)._dashboardServer = null;
-    }
+        /** Forcefully shut down the HTTP server — close all connections immediately. */
+        function destroyServer(): void {
+            const server = _currentServer ?? (api as any)._dashboardServer;
+            if (!server) return;
+            try {
+                // closeAllConnections() is available in Node 18.2+ — kills keep-alive sockets
+                if (typeof server.closeAllConnections === "function") {
+                    server.closeAllConnections();
+                }
+                server.close();
+            } catch { }
+            _currentServer = null;
+            (api as any)._dashboardServer = null;
+        }
 
-    // Ensure the server is torn down when the process exits (gateway restart / SIGTERM)
-    function _onProcessExit() { destroyServer(); }
-    process.once("SIGTERM", _onProcessExit);
-    process.once("SIGINT", _onProcessExit);
-    process.once("exit", _onProcessExit);
+        // Ensure the server is torn down when the process exits (gateway restart / SIGTERM)
+        function _onProcessExit() { destroyServer(); }
+        process.once("SIGTERM", _onProcessExit);
+        process.once("SIGINT", _onProcessExit);
+        process.once("exit", _onProcessExit);
 
-    function startServer() {
-        // Guard: close existing server before creating a new one
-        destroyServer();
+        function startServer() {
+            // Guard: close existing server before creating a new one
+            destroyServer();
 
-        const server = createServer(async (req, res) => {
-            const origin = req.headers.origin;
+            const server = createServer(async (req, res) => {
+                const origin = req.headers.origin;
 
-            // CORS — only allow configured origins
-            if (origin && isOriginAllowed(origin)) {
-                res.setHeader("Access-Control-Allow-Origin", origin);
-                res.setHeader("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS");
-                res.setHeader("Access-Control-Allow-Headers", "Content-Type, Authorization");
-                res.setHeader("Vary", "Origin");
-            }
+                // CORS — only allow configured origins
+                if (origin && isOriginAllowed(origin)) {
+                    res.setHeader("Access-Control-Allow-Origin", origin);
+                    res.setHeader("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS");
+                    res.setHeader("Access-Control-Allow-Headers", "Content-Type, Authorization");
+                    res.setHeader("Vary", "Origin");
+                }
 
-            if (req.method === "OPTIONS") {
-                if (!origin || !isOriginAllowed(origin)) {
-                    res.statusCode = 403;
+                if (req.method === "OPTIONS") {
+                    if (!origin || !isOriginAllowed(origin)) {
+                        res.statusCode = 403;
+                        res.end();
+                        return;
+                    }
+                    res.statusCode = 204;
                     res.end();
                     return;
                 }
-                res.statusCode = 204;
-                res.end();
-                return;
-            }
 
-            const url = new URL(req.url ?? "/", `http://localhost:${port}`);
+                const url = new URL(req.url ?? "/", `http://localhost:${port}`);
 
-            // Block cross-origin API requests from disallowed origins
-            if (url.pathname.startsWith("/api/") && origin && !isOriginAllowed(origin)) {
-                res.statusCode = 403;
+                // Block cross-origin API requests from disallowed origins
+                if (url.pathname.startsWith("/api/") && origin && !isOriginAllowed(origin)) {
+                    res.statusCode = 403;
+                    res.setHeader("Content-Type", "application/json");
+                    res.end(JSON.stringify({ error: "Origin not allowed" }));
+                    return;
+                }
+
+                // ── Auth routes (always accessible) ──
+                if (url.pathname === "/auth/setup" && req.method === "POST") {
+                    handleSetup(req, res);
+                    return;
+                }
+                if (url.pathname === "/auth/login" && req.method === "POST") {
+                    handleLogin(req, res);
+                    return;
+                }
+                if (url.pathname === "/auth/logout" && req.method === "POST") {
+                    handleLogout(req, res);
+                    return;
+                }
+
+                // ── Auth gate — everything below requires authentication ──
+                // Allow favicon/icons through without auth (browsers request these automatically)
+                const isPublicAsset = url.pathname === "/favicon.ico" || url.pathname === "/favicon.png"
+                    || url.pathname === "/manifest.json" || url.pathname === "/ios-icon.png"
+                    || url.pathname === "/apple-touch-icon.png" || url.pathname === "/apple-touch-icon-precomposed.png"
+                    || url.pathname === "/login.css";
+
+                if (!isPublicAsset) {
+                    const needsSetup = isSetupRequired();
+                    if (needsSetup) {
+                        // No credentials file — show setup page for HTML requests, 401 for API
+                        if (url.pathname.startsWith("/api/")) {
+                            res.statusCode = 401;
+                            res.setHeader("Content-Type", "application/json");
+                            res.end(JSON.stringify({ error: "Setup required — open the dashboard in a browser to create credentials" }));
+                            return;
+                        }
+                        serveLoginPage(res, title, true);
+                        return;
+                    }
+                    if (!isAuthenticated(req)) {
+                        // Not logged in — show login page for HTML requests, 401 for API
+                        if (url.pathname.startsWith("/api/")) {
+                            res.statusCode = 401;
+                            res.setHeader("Content-Type", "application/json");
+                            res.end(JSON.stringify({ error: "Authentication required — provide a Bearer token or log in via the dashboard" }));
+                            return;
+                        }
+                        serveLoginPage(res, title, false);
+                        return;
+                    }
+                }
+
+                // Serve dashboard HTML at root
+                if (url.pathname === "/" || url.pathname === "") {
+                    res.statusCode = 200;
+                    res.setHeader("Content-Type", "text/html; charset=utf-8");
+                    res.end(buildDashboardHTML(title));
+                    return;
+                }
+
+                // Serve dashboard CSS (cached, invalidated on file change)
+                if (url.pathname === "/dashboard.css") {
+                    res.statusCode = 200;
+                    res.setHeader("Content-Type", "text/css; charset=utf-8");
+                    res.setHeader("Cache-Control", "no-cache");
+                    try {
+                        res.end(getDashboardCSSContent());
+                    } catch (e: any) {
+                        res.end("/* CSS load error: " + e.message + " */");
+                    }
+                    return;
+                }
+
+                // Serve login CSS (cached, invalidated on file change)
+                if (url.pathname === "/login.css") {
+                    res.statusCode = 200;
+                    res.setHeader("Content-Type", "text/css; charset=utf-8");
+                    res.setHeader("Cache-Control", "no-cache");
+                    try {
+                        res.end(getLoginCSSContent());
+                    } catch (e: any) {
+                        res.end("/* CSS load error: " + e.message + " */");
+                    }
+                    return;
+                }
+
+                // Serve dashboard JS (cached, invalidated on file change)
+                if (url.pathname === "/dashboard.js") {
+                    res.statusCode = 200;
+                    res.setHeader("Content-Type", "application/javascript; charset=utf-8");
+                    res.setHeader("Cache-Control", "no-cache");
+                    try {
+                        res.end(getDashboardJSContent());
+                    } catch (e: any) {
+                        res.end("// JS load error: " + e.message);
+                    }
+                    return;
+                }
+
+                // PWA manifest for iOS/Android "Add to Home Screen" (cached)
+                if (url.pathname === "/manifest.json") {
+                    if (!(api as any)._manifestJson) {
+                        (api as any)._manifestJson = JSON.stringify({
+                            name: title,
+                            short_name: "OpenClaw",
+                            start_url: "/",
+                            display: "standalone",
+                            orientation: "portrait",
+                            background_color: "#0b0b10",
+                            theme_color: "#0b0b10",
+                            icons: [
+                                { src: "/ios-icon.png", sizes: "180x180", type: "image/png", purpose: "any" },
+                                { src: "/ios-icon.png", sizes: "180x180", type: "image/png", purpose: "maskable" }
+                            ]
+                        });
+                    }
+                    res.statusCode = 200;
+                    res.setHeader("Content-Type", "application/manifest+json");
+                    res.setHeader("Cache-Control", "public, max-age=3600");
+                    res.end((api as any)._manifestJson);
+                    return;
+                }
+
+                // Serve icon PNGs
+                if (url.pathname === "/ios-icon.png" || url.pathname === "/apple-touch-icon.png" || url.pathname === "/apple-touch-icon-precomposed.png" || url.pathname === "/icon-180.png") {
+                    res.statusCode = 200;
+                    res.setHeader("Content-Type", "image/png");
+                    res.setHeader("Cache-Control", "public, max-age=86400");
+                    res.end(getIosIcon());
+                    return;
+                }
+
+                if (url.pathname === "/logo.png") {
+                    res.statusCode = 200;
+                    res.setHeader("Content-Type", "image/png");
+                    res.setHeader("Cache-Control", "public, max-age=86400");
+                    res.end(getLogo());
+                    return;
+                }
+
+                if (url.pathname === "/favicon.ico" || url.pathname === "/favicon.png") {
+                    res.statusCode = 200;
+                    res.setHeader("Content-Type", "image/png");
+                    res.setHeader("Cache-Control", "public, max-age=86400");
+                    res.end(getFavicon());
+                    return;
+                }
+
+                // API routes under /api/*
+                if (url.pathname.startsWith("/api/")) {
+                    try {
+                        await handleApiRequest(req, res, url);
+                    } catch (err: any) {
+                        if (err.message === "Payload too large") {
+                            res.statusCode = 413;
+                            res.setHeader("Content-Type", "application/json");
+                            res.end(JSON.stringify({ error: "Payload too large" }));
+                        } else {
+                            res.statusCode = 500;
+                            res.setHeader("Content-Type", "application/json");
+                            res.end(JSON.stringify({ error: err.message ?? "Internal server error" }));
+                        }
+                    }
+                    return;
+                }
+
+                // 404
+                res.statusCode = 404;
                 res.setHeader("Content-Type", "application/json");
-                res.end(JSON.stringify({ error: "Origin not allowed" }));
-                return;
-            }
+                res.end(JSON.stringify({ error: "Not found" }));
+            });
 
-            // ── Auth routes (always accessible) ──
-            if (url.pathname === "/auth/setup" && req.method === "POST") {
-                handleSetup(req, res);
-                return;
-            }
-            if (url.pathname === "/auth/login" && req.method === "POST") {
-                handleLogin(req, res);
-                return;
-            }
-            if (url.pathname === "/auth/logout" && req.method === "POST") {
-                handleLogout(req, res);
-                return;
-            }
-
-            // ── Auth gate — everything below requires authentication ──
-            // Allow favicon/icons through without auth (browsers request these automatically)
-            const isPublicAsset = url.pathname === "/favicon.ico" || url.pathname === "/favicon.png"
-                || url.pathname === "/manifest.json" || url.pathname === "/ios-icon.png"
-                || url.pathname === "/apple-touch-icon.png" || url.pathname === "/apple-touch-icon-precomposed.png"
-                || url.pathname === "/login.css";
-
-            if (!isPublicAsset) {
-                const needsSetup = isSetupRequired();
-                if (needsSetup) {
-                    // No credentials file — show setup page for HTML requests, 401 for API
-                    if (url.pathname.startsWith("/api/")) {
-                        res.statusCode = 401;
-                        res.setHeader("Content-Type", "application/json");
-                        res.end(JSON.stringify({ error: "Setup required — open the dashboard in a browser to create credentials" }));
+            server.on("error", (err: any) => {
+                if (err.code === "EADDRINUSE") {
+                    if (_retryCount >= BACKOFF_DELAYS.length) {
+                        api.logger.error(`[agent-dashboard] FATAL: Port ${port} still in use after ${BACKOFF_DELAYS.length} retries. Giving up.`);
                         return;
                     }
-                    serveLoginPage(res, title, true);
-                    return;
+                    const delay = BACKOFF_DELAYS[_retryCount];
+                    api.logger.warn(`[agent-dashboard] Port ${port} in use. Retrying in ${delay}ms (attempt ${_retryCount + 1}/${BACKOFF_DELAYS.length})...`);
+                    _retryCount++;
+                    setTimeout(() => startServer(), delay);
+                } else {
+                    api.logger.error(`[agent-dashboard] Server error: ${err.message}`);
                 }
-                if (!isAuthenticated(req)) {
-                    // Not logged in — show login page for HTML requests, 401 for API
-                    if (url.pathname.startsWith("/api/")) {
-                        res.statusCode = 401;
-                        res.setHeader("Content-Type", "application/json");
-                        res.end(JSON.stringify({ error: "Authentication required — provide a Bearer token or log in via the dashboard" }));
-                        return;
+            });
+
+            server.listen({ port, host: bindAddr, exclusive: false }, () => {
+                _retryCount = 0; // reset on successful bind
+                // Short keep-alive so the port is released quickly on restart
+                server.keepAliveTimeout = 3000;
+                server.headersTimeout = 5000;
+                api.logger.info(`[agent-dashboard] Dashboard running at http://${bindAddr}:${port}`);
+            });
+
+            _currentServer = server;
+            (api as any)._dashboardServer = server;
+        }
+
+        // Register RPC methods so gateway knows about us
+        if (isFirstCall) {
+            api.registerGatewayMethod("dashboard.status", ({ respond }: any) => {
+                respond(true, { ok: true, plugin: "agent-dashboard", version: "1.0.0", port });
+            });
+        }
+
+        // Register the task flow tool — must happen for EVERY agent context
+        const PLUGIN_DIR = join(homedir(), ".openclaw", "extensions", "openclaw-agent-dashboard");
+        const TASKS_DIR = join(PLUGIN_DIR, "Tasks", "flows", "definitions");
+        const FLOW_STATE_DIR = join(PLUGIN_DIR, "Tasks", "flows", "state");
+        const FLOW_HISTORY_DIR = join(PLUGIN_DIR, "Tasks", "flows", "history");
+
+        // Register as a background service — runs its own HTTP server (once only)
+        if (isFirstCall) {
+            if (typeof api.registerService === "function") {
+                api.registerService({
+                    id: "agent-dashboard",
+                    start: async () => {
+                        if (_serverStarted) return;
+                        _serverStarted = true;
+                        try { if (!existsSync(FLOW_STATE_DIR)) mkdirSync(FLOW_STATE_DIR, { recursive: true }); } catch { }
+                        try { if (!existsSync(FLOW_HISTORY_DIR)) mkdirSync(FLOW_HISTORY_DIR, { recursive: true }); } catch { }
+                        await initSessionIndex();
+                        startServer();
+                    },
+                    stop: () => {
+                        destroyServer();
+                        _serverStarted = false;
+                        _stateCache.clear();
+                        _flowDefCache.clear();
+                        api.logger.info("[agent-dashboard] Dashboard server stopped");
+                    },
+                });
+
+                // Safety net: if the gateway doesn't call start() within 10s, start directly
+                setTimeout(() => {
+                    if (!_serverStarted) {
+                        api.logger.warn("[agent-dashboard] Gateway did not call service start() — starting server directly");
+                        _serverStarted = true;
+                        (async () => {
+                            try { if (!existsSync(FLOW_STATE_DIR)) mkdirSync(FLOW_STATE_DIR, { recursive: true }); } catch { }
+                            try { if (!existsSync(FLOW_HISTORY_DIR)) mkdirSync(FLOW_HISTORY_DIR, { recursive: true }); } catch { }
+                            await initSessionIndex();
+                            startServer();
+                        })();
                     }
-                    serveLoginPage(res, title, false);
-                    return;
-                }
-            }
-
-            // Serve dashboard HTML at root
-            if (url.pathname === "/" || url.pathname === "") {
-                res.statusCode = 200;
-                res.setHeader("Content-Type", "text/html; charset=utf-8");
-                res.end(buildDashboardHTML(title));
-                return;
-            }
-
-            // Serve dashboard CSS (cached, invalidated on file change)
-            if (url.pathname === "/dashboard.css") {
-                res.statusCode = 200;
-                res.setHeader("Content-Type", "text/css; charset=utf-8");
-                res.setHeader("Cache-Control", "no-cache");
-                try {
-                    res.end(getDashboardCSSContent());
-                } catch (e: any) {
-                    res.end("/* CSS load error: " + e.message + " */");
-                }
-                return;
-            }
-
-            // Serve login CSS (cached, invalidated on file change)
-            if (url.pathname === "/login.css") {
-                res.statusCode = 200;
-                res.setHeader("Content-Type", "text/css; charset=utf-8");
-                res.setHeader("Cache-Control", "no-cache");
-                try {
-                    res.end(getLoginCSSContent());
-                } catch (e: any) {
-                    res.end("/* CSS load error: " + e.message + " */");
-                }
-                return;
-            }
-
-            // Serve dashboard JS (cached, invalidated on file change)
-            if (url.pathname === "/dashboard.js") {
-                res.statusCode = 200;
-                res.setHeader("Content-Type", "application/javascript; charset=utf-8");
-                res.setHeader("Cache-Control", "no-cache");
-                try {
-                    res.end(getDashboardJSContent());
-                } catch (e: any) {
-                    res.end("// JS load error: " + e.message);
-                }
-                return;
-            }
-
-            // PWA manifest for iOS/Android "Add to Home Screen" (cached)
-            if (url.pathname === "/manifest.json") {
-                if (!(api as any)._manifestJson) {
-                    (api as any)._manifestJson = JSON.stringify({
-                        name: title,
-                        short_name: "OpenClaw",
-                        start_url: "/",
-                        display: "standalone",
-                        orientation: "portrait",
-                        background_color: "#0b0b10",
-                        theme_color: "#0b0b10",
-                        icons: [
-                            { src: "/ios-icon.png", sizes: "180x180", type: "image/png", purpose: "any" },
-                            { src: "/ios-icon.png", sizes: "180x180", type: "image/png", purpose: "maskable" }
-                        ]
-                    });
-                }
-                res.statusCode = 200;
-                res.setHeader("Content-Type", "application/manifest+json");
-                res.setHeader("Cache-Control", "public, max-age=3600");
-                res.end((api as any)._manifestJson);
-                return;
-            }
-
-            // Serve icon PNGs
-            if (url.pathname === "/ios-icon.png" || url.pathname === "/apple-touch-icon.png" || url.pathname === "/apple-touch-icon-precomposed.png" || url.pathname === "/icon-180.png") {
-                res.statusCode = 200;
-                res.setHeader("Content-Type", "image/png");
-                res.setHeader("Cache-Control", "public, max-age=86400");
-                res.end(getIosIcon());
-                return;
-            }
-
-            if (url.pathname === "/logo.png") {
-                res.statusCode = 200;
-                res.setHeader("Content-Type", "image/png");
-                res.setHeader("Cache-Control", "public, max-age=86400");
-                res.end(getLogo());
-                return;
-            }
-
-            if (url.pathname === "/favicon.ico" || url.pathname === "/favicon.png") {
-                res.statusCode = 200;
-                res.setHeader("Content-Type", "image/png");
-                res.setHeader("Cache-Control", "public, max-age=86400");
-                res.end(getFavicon());
-                return;
-            }
-
-            // API routes under /api/*
-            if (url.pathname.startsWith("/api/")) {
-                try {
-                    await handleApiRequest(req, res, url);
-                } catch (err: any) {
-                    if (err.message === "Payload too large") {
-                        res.statusCode = 413;
-                        res.setHeader("Content-Type", "application/json");
-                        res.end(JSON.stringify({ error: "Payload too large" }));
-                    } else {
-                        res.statusCode = 500;
-                        res.setHeader("Content-Type", "application/json");
-                        res.end(JSON.stringify({ error: err.message ?? "Internal server error" }));
-                    }
-                }
-                return;
-            }
-
-            // 404
-            res.statusCode = 404;
-            res.setHeader("Content-Type", "application/json");
-            res.end(JSON.stringify({ error: "Not found" }));
-        });
-
-        server.on("error", (err: any) => {
-            if (err.code === "EADDRINUSE") {
-                if (_retryCount >= BACKOFF_DELAYS.length) {
-                    api.logger.error(`[agent-dashboard] FATAL: Port ${port} still in use after ${BACKOFF_DELAYS.length} retries. Giving up.`);
-                    return;
-                }
-                const delay = BACKOFF_DELAYS[_retryCount];
-                api.logger.warn(`[agent-dashboard] Port ${port} in use. Retrying in ${delay}ms (attempt ${_retryCount + 1}/${BACKOFF_DELAYS.length})...`);
-                _retryCount++;
-                setTimeout(() => startServer(), delay);
-            } else {
-                api.logger.error(`[agent-dashboard] Server error: ${err.message}`);
-            }
-        });
-
-        server.listen({ port, host: bindAddr, exclusive: false }, () => {
-            _retryCount = 0; // reset on successful bind
-            // Short keep-alive so the port is released quickly on restart
-            server.keepAliveTimeout = 3000;
-            server.headersTimeout = 5000;
-            api.logger.info(`[agent-dashboard] Dashboard running at http://${bindAddr}:${port}`);
-        });
-
-        _currentServer = server;
-        (api as any)._dashboardServer = server;
-    }
-
-    // Register RPC methods so gateway knows about us
-    api.registerGatewayMethod("dashboard.status", ({ respond }: any) => {
-        respond(true, { ok: true, plugin: "agent-dashboard", version: "1.0.0", port });
-    });
-
-    // Register the single common task flow tool (optional — agents must opt in via alsoAllow)
-    const PLUGIN_DIR = join(homedir(), ".openclaw", "extensions", "openclaw-agent-dashboard");
-    const TASKS_DIR = join(PLUGIN_DIR, "Tasks", "flows", "definitions");
-    const FLOW_STATE_DIR = join(PLUGIN_DIR, "Tasks", "flows", "state");
-    const FLOW_HISTORY_DIR = join(PLUGIN_DIR, "Tasks", "flows", "history");
-
-    // Register as a background service — runs its own HTTP server
-    if (typeof api.registerService === "function") {
-        api.registerService({
-            id: "agent-dashboard",
-            start: async () => {
-                if (_serverStarted) return;
+                }, 10_000);
+            } else if (!_serverStarted) {
                 _serverStarted = true;
-                try { if (!existsSync(FLOW_STATE_DIR)) mkdirSync(FLOW_STATE_DIR, { recursive: true }); } catch { }
-                try { if (!existsSync(FLOW_HISTORY_DIR)) mkdirSync(FLOW_HISTORY_DIR, { recursive: true }); } catch { }
-                await initSessionIndex();
-                startServer();
-            },
-            stop: () => {
-                destroyServer();
-                _serverStarted = false;
-                _stateCache.clear();
-                _flowDefCache.clear();
-                api.logger.info("[agent-dashboard] Dashboard server stopped");
-            },
-        });
-
-        // Safety net: if the gateway doesn't call start() within 10s, start directly
-        setTimeout(() => {
-            if (!_serverStarted) {
-                api.logger.warn("[agent-dashboard] Gateway did not call service start() — starting server directly");
-                _serverStarted = true;
+                api.logger.warn("[agent-dashboard] api.registerService not available — starting server directly");
                 (async () => {
                     try { if (!existsSync(FLOW_STATE_DIR)) mkdirSync(FLOW_STATE_DIR, { recursive: true }); } catch { }
                     try { if (!existsSync(FLOW_HISTORY_DIR)) mkdirSync(FLOW_HISTORY_DIR, { recursive: true }); } catch { }
@@ -381,20 +397,22 @@ export default function register(api: any) {
                     startServer();
                 })();
             }
-        }, 10_000);
-    } else if (!_serverStarted) {
-        _serverStarted = true;
-        api.logger.warn("[agent-dashboard] api.registerService not available — starting server directly");
-        (async () => {
-            try { if (!existsSync(FLOW_STATE_DIR)) mkdirSync(FLOW_STATE_DIR, { recursive: true }); } catch { }
-            try { if (!existsSync(FLOW_HISTORY_DIR)) mkdirSync(FLOW_HISTORY_DIR, { recursive: true }); } catch { }
-            await initSessionIndex();
-            startServer();
-        })();
-    }
+        } // end isFirstCall guard for service registration
 
-    // Ensure directories exist — deferred to service start() to avoid triggering
-    // gateway file-watchers during plugin registration.
+    } // end isFirstCall guard for server setup
+
+    // ── Tool registration — runs for EVERY agent context ──
+    // The gateway calls register() per agent. The tool must be registered
+    // in each agent's context for it to appear in that agent's tool list.
+
+    const PLUGIN_DIR = join(homedir(), ".openclaw", "extensions", "openclaw-agent-dashboard");
+    const TASKS_DIR = join(PLUGIN_DIR, "Tasks", "flows", "definitions");
+    const FLOW_STATE_DIR = join(PLUGIN_DIR, "Tasks", "flows", "state");
+    const FLOW_HISTORY_DIR = join(PLUGIN_DIR, "Tasks", "flows", "history");
+
+    // Ensure directories exist
+    try { if (!existsSync(FLOW_STATE_DIR)) mkdirSync(FLOW_STATE_DIR, { recursive: true }); } catch { }
+    try { if (!existsSync(FLOW_HISTORY_DIR)) mkdirSync(FLOW_HISTORY_DIR, { recursive: true }); } catch { }
 
     // Flow execution state persisted to disk
     interface FlowExecState {
@@ -720,9 +738,5 @@ export default function register(api: any) {
                 return { content: [{ type: "text", text: `Unknown action: ${action}. Use run, step_complete, or resume.` }] };
             },
         },
-        { optional: true },
     );
-
-    api.logger.info(`[agent-dashboard] Will start standalone server on port ${port}`);
 }
-

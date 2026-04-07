@@ -256,8 +256,29 @@ export async function initSessionIndex(): Promise<void> {
                         }
                         break;
                     } catch {
-                        // file doesn't exist for this extension
+                        // file doesn't exist for this extension — try with topic suffix
                     }
+                }
+
+                // If exact match failed, scan for files starting with the session ID
+                // (handles compound filenames like {sessionId}-topic-{topicId}.jsonl)
+                if (!filePath) {
+                    try {
+                        const dirFiles = await readdirAsync(sessDir);
+                        for (const df of dirFiles) {
+                            if (df.startsWith(sid + "-") && (df.endsWith(".jsonl") || df.endsWith(".json")) && !df.includes(".deleted.")) {
+                                const fp = join(sessDir, df);
+                                const st = await statAsync(fp);
+                                filePath = fp;
+                                mtime = st.mtimeMs;
+                                updatedAt = updatedAt || st.mtime.toISOString();
+                                if (df.endsWith(".jsonl")) {
+                                    messageCount = Math.max(1, Math.round(st.size / 500));
+                                }
+                                break;
+                            }
+                        }
+                    } catch { }
                 }
 
                 sessionIndex.set(sid, {
@@ -478,6 +499,26 @@ export async function refreshSessionIndex(): Promise<void> {
                     } catch { }
                 }
 
+                // Compound filename fallback (e.g. {sessionId}-topic-{topicId}.jsonl)
+                if (!filePath) {
+                    try {
+                        const dirFiles = await readdirAsync(sessDir);
+                        for (const df of dirFiles) {
+                            if (df.startsWith(sid + "-") && (df.endsWith(".jsonl") || df.endsWith(".json")) && !df.includes(".deleted.")) {
+                                const fp = join(sessDir, df);
+                                const st = await statAsync(fp);
+                                filePath = fp;
+                                mtime = st.mtimeMs;
+                                updatedAt = updatedAt || st.mtime.toISOString();
+                                if (df.endsWith(".jsonl")) {
+                                    messageCount = Math.max(1, Math.round(st.size / 500));
+                                }
+                                break;
+                            }
+                        }
+                    } catch { }
+                }
+
                 sessionIndex.set(sid, {
                     sessionKey: sid,
                     agentId: meta.agentId || agentId,
@@ -630,6 +671,26 @@ export async function scanAndIndexAgentSessions(agentId: string): Promise<void> 
                         messageCount = Math.max(1, Math.round(st.size / 500));
                     }
                     break;
+                } catch { }
+            }
+
+            // Compound filename fallback (e.g. {sessionId}-topic-{topicId}.jsonl)
+            if (!filePath) {
+                try {
+                    const dirFiles = await readdirAsync(sessDir);
+                    for (const df of dirFiles) {
+                        if (df.startsWith(sid + "-") && (df.endsWith(".jsonl") || df.endsWith(".json")) && !df.includes(".deleted.")) {
+                            const fp = join(sessDir, df);
+                            const st = await statAsync(fp);
+                            filePath = fp;
+                            mtime = st.mtimeMs;
+                            updatedAt = updatedAt || st.mtime.toISOString();
+                            if (df.endsWith(".jsonl")) {
+                                messageCount = Math.max(1, Math.round(st.size / 500));
+                            }
+                            break;
+                        }
+                    }
                 } catch { }
             }
 
