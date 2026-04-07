@@ -65,6 +65,20 @@ export async function handleLogRoutes(
         // Try file-based logs first
         if (logFile && existsSync(logFile)) {
             try {
+                // Guard: skip files larger than 10MB to avoid OOM on huge log files
+                const logStat = statSync(logFile);
+                if (logStat.size > 10 * 1024 * 1024) {
+                    // Read only the tail portion (last ~1MB) for very large files
+                    const fd = openSync(logFile, "r");
+                    const tailSize = Math.min(logStat.size, 1024 * 1024);
+                    const buf = Buffer.alloc(tailSize);
+                    readSync(fd, buf, 0, tailSize, logStat.size - tailSize);
+                    closeSync(fd);
+                    const allLines = buf.toString("utf-8").split("\n");
+                    const tail = allLines.slice(-lines).filter(Boolean);
+                    json(res, 200, { lines: tail, logFile, totalLines: -1, truncated: true });
+                    return true;
+                }
                 const content = readFileSync(logFile, "utf-8");
                 const allLines = content.split("\n");
                 const tail = allLines.slice(-lines).filter(Boolean);
@@ -140,8 +154,14 @@ export async function handleLogRoutes(
             { encoding: "utf-8" }
         );
         let journalBuf = "";
+        const JOURNAL_BUF_MAX = 64 * 1024; // 64KB max buffer to prevent OOM
         journalProc.stdout?.on("data", (chunk: string) => {
             journalBuf += chunk;
+            // Guard: if buffer grows too large, discard oldest data
+            if (journalBuf.length > JOURNAL_BUF_MAX) {
+                const lastNl = journalBuf.lastIndexOf("\n", journalBuf.length - JOURNAL_BUF_MAX);
+                journalBuf = lastNl >= 0 ? journalBuf.slice(lastNl + 1) : journalBuf.slice(-JOURNAL_BUF_MAX);
+            }
             const lines = journalBuf.split("\n");
             journalBuf = lines.pop() || "";
             for (const line of lines) {

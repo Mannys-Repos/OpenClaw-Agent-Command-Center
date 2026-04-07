@@ -1,4 +1,4 @@
-import { readFileSync, writeFileSync, existsSync, readdirSync, mkdirSync, unlinkSync } from "node:fs";
+import { writeFileSync, existsSync, readdirSync, mkdirSync, unlinkSync, statSync } from "node:fs";
 import { stat as statAsync, readdir as readdirAsync, readFile as readFileAsync } from "node:fs/promises";
 import { join, extname } from "node:path";
 import type { IncomingMessage, ServerResponse } from "node:http";
@@ -8,6 +8,8 @@ import {
     readConfig,
     getConfigError,
     writeConfig,
+    stageConfig,
+    readEffectiveConfig,
     readDashboardConfig,
     writeDashboardConfig,
     execAsync,
@@ -137,7 +139,7 @@ export async function handleAgentRoutes(
     // ─── GET /api/overview — full dashboard data in one call ───
     if (path === "/overview" && method === "GET") {
         const fast = url.searchParams?.get("fast") === "1";
-        const config = readConfig();
+        const config = readEffectiveConfig();
         const agentsList = config.agents?.list || [];
         const agents = agentsList.length > 0 ? agentsList : [{ id: "main", default: true }];
 
@@ -181,15 +183,12 @@ export async function handleAgentRoutes(
                         const agentId = s.agentId || "";
                         if (sid && agentId) {
                             const jsonlPath = join(AGENTS_STATE_DIR, agentId, "sessions", sid + ".jsonl");
-                            if (existsSync(jsonlPath)) {
-                                try {
-                                    const content = readFileSync(jsonlPath, "utf-8");
-                                    for (const line of content.split("\n")) {
-                                        if (!line.trim()) continue;
-                                        try { const e = JSON.parse(line); if (e.type === "message" && e.message) messageCount++; } catch { }
-                                    }
-                                } catch { }
-                            }
+                            try {
+                                // Estimate message count from file size instead of reading entire file into memory.
+                                // Average JSONL message line is ~500 bytes; subtract ~200 for the session header line.
+                                const st = statSync(jsonlPath);
+                                messageCount = Math.max(0, Math.round((st.size - 200) / 500));
+                            } catch { }
                         }
                         return {
                             sessionKey: sid || s.key,
@@ -228,7 +227,7 @@ export async function handleAgentRoutes(
     const agentDetailMatch = path.match(/^\/agents\/([^/]+)$/);
     if (agentDetailMatch && method === "GET") {
         const agentId = decodeURIComponent(agentDetailMatch[1]);
-        const config = readConfig();
+        const config = readEffectiveConfig();
         const agentsList = config.agents?.list || [];
         let agent = agentsList.find((a: any) => a.id === agentId);
         if (!agent && agentId === "main") agent = { id: "main", default: true };
@@ -242,6 +241,7 @@ export async function handleAgentRoutes(
     if (agentUpdateMatch && method === "PUT") {
         const agentId = decodeURIComponent(agentUpdateMatch[1]);
         const body = await parseBody(req);
+        const defer = url.searchParams?.get("defer") === "1";
 
         // Strip icon from main config — store in dashboard extension config instead
         if (body.icon !== undefined) {
@@ -257,7 +257,7 @@ export async function handleAgentRoutes(
             delete body.tools.agentToAgent;
         }
 
-        const config = readConfig();
+        const config = defer ? readEffectiveConfig() : readConfig();
         if (!config.agents) config.agents = {};
         if (!config.agents.list) config.agents.list = [];
 
@@ -279,8 +279,13 @@ export async function handleAgentRoutes(
         } else {
             config.agents.list.push({ ...body, id: agentId });
         }
-        writeConfig(config);
-        json(res, 200, { ok: true, agent: config.agents.list.find((a: any) => a.id === agentId) });
+        if (defer) {
+            stageConfig(config, "Update agent: " + agentId);
+            json(res, 200, { ok: true, deferred: true, agent: config.agents.list.find((a: any) => a.id === agentId) });
+        } else {
+            writeConfig(config);
+            json(res, 200, { ok: true, agent: config.agents.list.find((a: any) => a.id === agentId) });
+        }
         return true;
     }
 
@@ -288,7 +293,8 @@ export async function handleAgentRoutes(
     if (path === "/agents" && method === "POST") {
         const body = await parseBody(req);
         if (!body.id) return json(res, 400, { error: "id required" }), true;
-        const config = readConfig();
+        const defer = url.searchParams?.get("defer") === "1";
+        const config = defer ? readEffectiveConfig() : readConfig();
         if (!config.agents) config.agents = {};
         if (!config.agents.list) config.agents.list = [];
         if (config.agents.list.some((a: any) => a.id === body.id)) {
@@ -315,8 +321,13 @@ export async function handleAgentRoutes(
             }
         }
 
-        writeConfig(config);
-        json(res, 201, { ok: true, agent: newAgent });
+        if (defer) {
+            stageConfig(config, "Create agent: " + body.id);
+            json(res, 201, { ok: true, deferred: true, agent: newAgent });
+        } else {
+            writeConfig(config);
+            json(res, 201, { ok: true, agent: newAgent });
+        }
         return true;
     }
 
@@ -324,7 +335,8 @@ export async function handleAgentRoutes(
     const agentDeleteMatch = path.match(/^\/agents\/([^/]+)$/);
     if (agentDeleteMatch && method === "DELETE") {
         const agentId = decodeURIComponent(agentDeleteMatch[1]);
-        const config = readConfig();
+        const defer = url.searchParams?.get("defer") === "1";
+        const config = defer ? readEffectiveConfig() : readConfig();
         if (!config.agents?.list) return json(res, 404, { error: "No agents" }), true;
         config.agents.list = config.agents.list.filter((a: any) => a.id !== agentId);
         if (config.bindings) {
@@ -333,8 +345,13 @@ export async function handleAgentRoutes(
         if (config.routing?.bindings) {
             config.routing.bindings = config.routing.bindings.filter((b: any) => b.agentId !== agentId);
         }
-        writeConfig(config);
-        json(res, 200, { ok: true });
+        if (defer) {
+            stageConfig(config, "Delete agent: " + agentId);
+            json(res, 200, { ok: true, deferred: true });
+        } else {
+            writeConfig(config);
+            json(res, 200, { ok: true });
+        }
         return true;
     }
 
@@ -343,7 +360,7 @@ export async function handleAgentRoutes(
     if (mdMatch && !path.includes("/generate")) {
         const agentId = decodeURIComponent(mdMatch[1]);
         const filename = decodeURIComponent(mdMatch[2]);
-        const config = readConfig();
+        const config = readEffectiveConfig();
         const agentsList = config.agents?.list || [];
         let agent = agentsList.find((a: any) => a.id === agentId);
         if (!agent && agentId === "main") agent = { id: "main" };
@@ -375,17 +392,23 @@ export async function handleAgentRoutes(
 
     // ─── Bindings CRUD ───
     if (path === "/bindings" && method === "GET") {
-        const config = readConfig();
+        const config = readEffectiveConfig();
         json(res, 200, { bindings: config.bindings || config.routing?.bindings || [] });
         return true;
     }
     if (path === "/bindings" && method === "PUT") {
         const body = await parseBody(req);
-        const config = readConfig();
+        const defer = url.searchParams?.get("defer") === "1";
+        const config = defer ? readEffectiveConfig() : readConfig();
         config.bindings = body.bindings || [];
         if (config.routing?.bindings) delete config.routing.bindings;
-        writeConfig(config);
-        json(res, 200, { ok: true });
+        if (defer) {
+            stageConfig(config, "Update bindings");
+            json(res, 200, { ok: true, deferred: true });
+        } else {
+            writeConfig(config);
+            json(res, 200, { ok: true });
+        }
         return true;
     }
 
@@ -397,7 +420,7 @@ export async function handleAgentRoutes(
         const description = (body.description || "").trim();
         const model = (body.model || "").trim();
         if (!description) return json(res, 400, { error: "description required" }), true;
-        const config = readConfig();
+        const config = readEffectiveConfig();
         const agentsList = config.agents?.list || [];
         let agent = agentsList.find((a: any) => a.id === agentId);
         if (!agent && agentId === "main") agent = { id: "main" };
@@ -442,7 +465,7 @@ export async function handleAgentRoutes(
         const notes = (body.notes || "").trim();
         const model = (body.model || "").trim();
         if (!notes) return json(res, 400, { error: "notes required" }), true;
-        const config = readConfig();
+        const config = readEffectiveConfig();
         const agentsList = config.agents?.list || [];
         let agent = agentsList.find((a: any) => a.id === agentId);
         if (!agent && agentId === "main") agent = { id: "main" };

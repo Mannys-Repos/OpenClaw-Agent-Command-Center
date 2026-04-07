@@ -37,10 +37,17 @@ export function parseSessionJsonl(filePath: string): { messages: any[]; agentId:
             }
         } catch { }
     }
+    // If the session is very large, keep only the most recent messages
+    if (messages.length > MAX_SESSION_MESSAGES) {
+        return { messages: messages.slice(-MAX_SESSION_MESSAGES), agentId, channel, updatedAt };
+    }
     return { messages, agentId, channel, updatedAt };
 }
 
 // ─── Async JSONL session parser ───
+// Caps the number of messages loaded to prevent OOM on very large session files.
+const MAX_SESSION_MESSAGES = 500;
+
 export async function parseSessionJsonlAsync(filePath: string): Promise<{ messages: any[]; agentId: string; channel: string; updatedAt: string | null }> {
     const raw = await readFileAsync(filePath, "utf-8");
     const messages: any[] = [];
@@ -62,6 +69,10 @@ export async function parseSessionJsonlAsync(filePath: string): Promise<{ messag
                 if (entry.timestamp) updatedAt = entry.timestamp;
             }
         } catch { }
+    }
+    // If the session is very large, keep only the most recent messages
+    if (messages.length > MAX_SESSION_MESSAGES) {
+        return { messages: messages.slice(-MAX_SESSION_MESSAGES), agentId, channel, updatedAt };
     }
     return { messages, agentId, channel, updatedAt };
 }
@@ -193,6 +204,7 @@ export type SessionIndexEntry = {
 };
 
 export const sessionIndex: Map<string, SessionIndexEntry> = new Map();
+const SESSION_INDEX_MAX = 5000; // hard cap to prevent unbounded growth
 
 // ─── Startup index population ───
 export async function initSessionIndex(): Promise<void> {
@@ -354,6 +366,9 @@ export async function initSessionIndex(): Promise<void> {
     } catch {
         // DASHBOARD_SESSIONS_DIR may not exist yet
     }
+
+    // Enforce hard cap — if index grew too large, evict oldest entries
+    _enforceSessionIndexCap();
 }
 
 // ─── Incremental mtime-based index refresh ───
@@ -559,6 +574,24 @@ export async function refreshSessionIndex(): Promise<void> {
             } catch { }
         }
     } catch { }
+
+    // Enforce hard cap — if index grew too large, evict oldest entries
+    _enforceSessionIndexCap();
+}
+
+// ─── Enforce session index size cap ───
+function _enforceSessionIndexCap(): void {
+    if (sessionIndex.size <= SESSION_INDEX_MAX) return;
+    // Sort by updatedAt ascending (oldest first), evict oldest
+    const entries = [...sessionIndex.entries()].sort((a, b) => {
+        const aTime = a[1].updatedAt || "";
+        const bTime = b[1].updatedAt || "";
+        return aTime.localeCompare(bTime);
+    });
+    const excess = sessionIndex.size - SESSION_INDEX_MAX;
+    for (let i = 0; i < excess; i++) {
+        sessionIndex.delete(entries[i][0]);
+    }
 }
 
 // ─── Targeted async scan of a single agent's sessions dir, updating the index ───

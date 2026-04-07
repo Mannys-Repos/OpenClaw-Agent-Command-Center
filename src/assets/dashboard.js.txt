@@ -511,6 +511,8 @@ function load(opts){
         load({_quiet:true});
         // Run health check after a short delay to not compete with the full load
         setTimeout(_runHealthCheck,2000);
+        // Check for pending config changes
+        _checkPendingOnLoad();
         // Restore page from URL hash on first load
         _restoreFromHash();
       },50);
@@ -547,11 +549,11 @@ function showRawConfigForRepair(){
   api("config/raw").then(function(d){
     var raw=d.raw||"{}";
     openFsEditorDirect("Fix Configuration (Raw JSON)",raw,true,function(newVal){
-      api("config",{method:"PUT",body:JSON.stringify({raw:newVal})}).then(function(r){
+      api("config?defer=1",{method:"PUT",body:JSON.stringify({raw:newVal})}).then(function(r){
         _closeFsOverlay();
         if(r.error){toast(r.error,"err");return}
         toast("Config saved — reloading…","ok");
-        load();_showRestartBanner();
+        load();_deferRestart("Config saved");
       }).catch(function(e){_closeFsOverlay();toast(e.message,"err")});
     });
   }).catch(function(e){toast("Failed to load raw config: "+e.message,"err")});
@@ -1468,9 +1470,9 @@ function saveIdentity(id){
   var origText="";
   if(saveBtn){origText=saveBtn.textContent;saveBtn.disabled=true;saveBtn.textContent="⏳ Saving…"}
   _showProgress();
-  api("agents/"+encodeURIComponent(id),{method:"PUT",body:JSON.stringify(u)}).then(function(r){
+  api(_deferParam("agents/"+encodeURIComponent(id)),{method:"PUT",body:JSON.stringify(u)}).then(function(r){
     _hideProgress();
-    toast("Identity saved","ok");_showRestartBanner();
+    toast("Identity saved","ok");_deferRestart("Identity saved");
     if(saveBtn){saveBtn.textContent="✓ Saved";setTimeout(function(){if(saveBtn){saveBtn.disabled=false;saveBtn.textContent=origText}},1200)}
     // Update local agent data instead of full reload
     if(r.agent){
@@ -1809,12 +1811,12 @@ function submitEditSkill(agentId,dirName,scope){
   var body=V("edit-skill-body");
   if(!name){toast("Skill name is required","err");return}
   var content="---\nname: "+name+"\ndescription: "+desc+"\n---\n\n"+body;
-  api("skills/"+encodeURIComponent(agentId)+"/"+encodeURIComponent(dirName),{method:"PUT",body:JSON.stringify({scope:scope,content:content})}).then(function(){
+  api("skills/"+encodeURIComponent(agentId)+"/"+encodeURIComponent(dirName)+"?defer=1",{method:"PUT",body:JSON.stringify({scope:scope,content:content})}).then(function(){
     closeModal();toast("Skill saved","ok");
     delete _skillsCache[agentId];
-    _showRestartBanner();
+    _deferRestart("Skill saved");
   }).catch(function(e){
-    if(e.message==="Failed to fetch"){closeModal();toast("Skill saved","ok");delete _skillsCache[agentId];_showRestartBanner()}
+    if(e.message==="Failed to fetch"){closeModal();toast("Skill saved","ok");delete _skillsCache[agentId];_deferRestart("Skill saved")}
     else toast(e.message,"err");
   });
 }
@@ -1835,12 +1837,12 @@ function submitNewSkill(agentId){
   var body=V("new-skill-body");
   if(!name){toast("Skill name is required","err");return}
   var dirName=name.toLowerCase().replace(/[^a-z0-9-]/g,"-").replace(/-+/g,"-");
-  api("skills/"+encodeURIComponent(agentId)+"/"+encodeURIComponent(dirName),{method:"PUT",body:JSON.stringify({scope:scope,name:name,description:desc,body:body})}).then(function(){
+  api("skills/"+encodeURIComponent(agentId)+"/"+encodeURIComponent(dirName)+"?defer=1",{method:"PUT",body:JSON.stringify({scope:scope,name:name,description:desc,body:body})}).then(function(){
     closeModal();toast("Skill created","ok");
     delete _skillsCache[agentId];
-    _showRestartBanner();
+    _deferRestart("Skill created");
   }).catch(function(e){
-    if(e.message==="Failed to fetch"){closeModal();toast("Skill created","ok");delete _skillsCache[agentId];_showRestartBanner()}
+    if(e.message==="Failed to fetch"){closeModal();toast("Skill created","ok");delete _skillsCache[agentId];_deferRestart("Skill created")}
     else toast(e.message,"err");
   });
 }
@@ -1854,26 +1856,26 @@ function deleteSkill(agentId,dirName,tier){
   api("skills/"+encodeURIComponent(agentId)+"/"+encodeURIComponent(dirName)+"?scope="+scope,{method:"DELETE"}).then(function(){
     toast("Skill deleted","ok");
     delete _skillsCache[agentId];
-    _showRestartBanner();
+    _deferRestart("Skill deleted");
   }).catch(function(e){
-    if(e.message==="Failed to fetch"){toast("Skill deleted","ok");delete _skillsCache[agentId];_showRestartBanner()}
+    if(e.message==="Failed to fetch"){toast("Skill deleted","ok");delete _skillsCache[agentId];_deferRestart("Skill deleted")}
     else toast(e.message,"err");
   });
 }
 
 function toggleSkill(agentId,dirName,enabled){
-  api("skills/"+encodeURIComponent(agentId)+"/"+encodeURIComponent(dirName),{method:"PATCH",body:JSON.stringify({enabled:enabled})}).then(function(){
+  api("skills/"+encodeURIComponent(agentId)+"/"+encodeURIComponent(dirName)+"?defer=1",{method:"PATCH",body:JSON.stringify({enabled:enabled})}).then(function(){
     var skills=_skillsCache[agentId];
     if(skills){for(var i=0;i<skills.length;i++){if(skills[i].dirName===dirName)skills[i].enabled=enabled}}
     toast("Skill "+(enabled?"enabled":"disabled"),"ok");
-    // Enabling writes to openclaw.json (adds read tool) → gateway restart
-    if(enabled){_showRestartBanner()}
+    // Enabling writes to openclaw.json (adds read tool) → deferred restart
+    if(enabled){_deferRestart("Skill enabled")}
   }).catch(function(e){
     if(e.message==="Failed to fetch"){
       var skills=_skillsCache[agentId];
       if(skills){for(var i=0;i<skills.length;i++){if(skills[i].dirName===dirName)skills[i].enabled=enabled}}
       toast("Skill "+(enabled?"enabled":"disabled"),"ok");
-      if(enabled){_showRestartBanner()}
+      if(enabled){_deferRestart("Skill enabled")}
     } else {
       toast(e.message,"err");
     }
@@ -1904,9 +1906,9 @@ function submitInstallSkill(agentId){
   api("skills/"+encodeURIComponent(agentId)+"/install",{method:"POST",body:JSON.stringify({source:source,identifier:identifier,scope:scope})}).then(function(){
     toast("Skill installed","ok");
     delete _skillsCache[agentId];
-    _showRestartBanner();
+    _deferRestart("Skill installed");
   }).catch(function(e){
-    if(e.message==="Failed to fetch"){toast("Skill installed","ok");delete _skillsCache[agentId];_showRestartBanner()}
+    if(e.message==="Failed to fetch"){toast("Skill installed","ok");delete _skillsCache[agentId];_deferRestart("Skill installed")}
     else toast("Install failed: "+e.message,"err");
   });
 }
@@ -2096,7 +2098,7 @@ function saveTools(id){
   if(mode)sb.mode=mode;if(scope)sb.scope=scope;if(wsA&&wsA!=="rw")sb.workspaceAccess=wsA;
   var u={tools:tools};if(Object.keys(sb).length>0)u.sandbox=sb;
   _showProgress();
-  api("agents/"+encodeURIComponent(id),{method:"PUT",body:JSON.stringify(u)}).then(function(r){_hideProgress();toast("Tools saved","ok");_showRestartBanner();_updateAgentLocal(id,u)}).catch(function(e){_hideProgress();toast(e.message,"err")});
+  api(_deferParam("agents/"+encodeURIComponent(id)),{method:"PUT",body:JSON.stringify(u)}).then(function(r){_hideProgress();toast("Tools saved","ok");_deferRestart("Tools saved");_updateAgentLocal(id,u)}).catch(function(e){_hideProgress();toast(e.message,"err")});
 }
 
 function chIcon(ch){
@@ -2104,11 +2106,11 @@ function chIcon(ch){
   return icons[ch]||"📻";
 }
 function toggleChannel(name,enabled){
-  api("channels/"+encodeURIComponent(name),{method:"PUT",body:JSON.stringify({enabled:enabled})}).then(function(){_showRestartBanner()}).catch(function(e){toast(e.message,"err")});
+  api(_deferParam("channels/"+encodeURIComponent(name)),{method:"PUT",body:JSON.stringify({enabled:enabled})}).then(function(){_deferRestart("Channel "+(enabled?"enabled":"disabled"))}).catch(function(e){toast(e.message,"err")});
 }
 function deleteChannel(name){
   if(!confirm("Remove channel "+name+" from config?"))return;
-  api("channels/"+encodeURIComponent(name),{method:"DELETE"}).then(function(){toast("Channel removed","ok");_showRestartBanner()}).catch(function(e){toast(e.message,"err")});
+  api(_deferParam("channels/"+encodeURIComponent(name)),{method:"DELETE"}).then(function(){toast("Channel removed","ok");_deferRestart("Channel removed")}).catch(function(e){toast(e.message,"err")});
 }
 function showAddChannel(){
   openModal("Add Channel Integration",
@@ -2130,7 +2132,7 @@ function doAddChannel(){
   if(!config.channels[type].accounts)config.channels[type].accounts={};
   config.channels[type].accounts[acc]={token:token};
   config.channels[type].enabled=true;
-  api("config",{method:"PUT",body:JSON.stringify({config:config})}).then(function(){toast("Channel added","ok");_showRestartBanner();closeModal()}).catch(function(e){toast(e.message,"err")});
+  api("config?defer=1",{method:"PUT",body:JSON.stringify({config:config})}).then(function(){toast("Channel added","ok");_deferRestart("Channel added");closeModal()}).catch(function(e){toast(e.message,"err")});
 }
 // ── Channel type definitions ──
 var CH_TYPES=["whatsapp","telegram","discord","slack","signal","matrix","webchat","irc"];
@@ -2158,9 +2160,7 @@ var CH_CHANNEL_FIELDS={
 // Per-account fields by channel type
 var CH_ACCOUNT_FIELDS={
   discord:[
-    {key:"token",label:"Bot Token",placeholder:"${MAIN_BOT_TOKEN}",secret:true,tip:"Discord bot token. Use ${ENV_VAR} to reference a secret from .env."},
-    {key:"groupPolicy",label:"Group Policy",type:"select",options:["allowlist","denylist","open"],tip:"Override channel-level group policy for this account."},
-    {key:"streaming",label:"Streaming",type:"select",options:["off","on","auto"],tip:"Override streaming for this account."}
+    {key:"token",label:"Bot Token",placeholder:"${MAIN_BOT_TOKEN}",secret:true,tip:"Discord bot token. Use ${ENV_VAR} to reference a secret from .env."}
   ],
   telegram:[
     {key:"token",label:"Bot Token",placeholder:"${TELEGRAM_BOT_TOKEN}",secret:true,tip:"Telegram bot token from @BotFather. Use ${ENV_VAR} for secrets."},
@@ -2233,14 +2233,14 @@ function addBinding(agentId){
   if(acc)match.accountId=acc;
   if(peerRaw&&peerRaw.indexOf(":")>-1){var parts=peerRaw.split(":");match.peer={kind:parts[0],id:parts.slice(1).join(":")}}
   var all=(D.bindings||[]).concat([{agentId:agentId,match:match}]);
-  api("bindings",{method:"PUT",body:JSON.stringify({bindings:all})}).then(function(){toast("Routing rule added","ok");_showRestartBanner()}).catch(function(e){toast(e.message,"err")});
+  api(_deferParam("bindings"),{method:"PUT",body:JSON.stringify({bindings:all})}).then(function(){toast("Routing rule added","ok");_deferRestart("Routing rule added")}).catch(function(e){toast(e.message,"err")});
 }
 function removeBinding(agentId,index){
   var ab=(D.bindings||[]).filter(function(b){return b.agentId===agentId});
   var target=ab[index];if(!target)return;
   var gi=D.bindings.indexOf(target);if(gi<0)return;
   var all=D.bindings.slice();all.splice(gi,1);
-  api("bindings",{method:"PUT",body:JSON.stringify({bindings:all})}).then(function(){toast("Rule removed","ok");_showRestartBanner()}).catch(function(e){toast(e.message,"err")});
+  api(_deferParam("bindings"),{method:"PUT",body:JSON.stringify({bindings:all})}).then(function(){toast("Rule removed","ok");_deferRestart("Routing rule removed")}).catch(function(e){toast(e.message,"err")});
 }
 
 // ── Sessions Tab ──
@@ -3089,22 +3089,22 @@ function addSubagent(id){
   var subs=getSubs(a).slice();
   if(subs.indexOf(sel.value)===-1)subs.push(sel.value);
   var patch={subagents:{allowAgents:subs}};
-  api("agents/"+encodeURIComponent(id),{method:"PUT",body:JSON.stringify(patch)})
-    .then(function(){toast("Subagent added","ok");_updateAgentLocal(id,patch);_showRestartBanner()}).catch(function(e){_updateAgentLocal(id,patch);toast("Subagent added","ok");_showRestartBanner()});
+  api(_deferParam("agents/"+encodeURIComponent(id)),{method:"PUT",body:JSON.stringify(patch)})
+    .then(function(){toast("Subagent added","ok");_updateAgentLocal(id,patch);_deferRestart("Subagent added")}).catch(function(e){_updateAgentLocal(id,patch);toast("Subagent added","ok");_deferRestart("Subagent added")});
 }
 function removeSubagent(id,subId){
   var a=null;for(var i=0;i<D.agents.length;i++){if(D.agents[i].id===id){a=D.agents[i];break}}
   if(!a)return;
   var subs=getSubs(a).filter(function(s){return s!==subId});
   var patch={subagents:{allowAgents:subs}};
-  api("agents/"+encodeURIComponent(id),{method:"PUT",body:JSON.stringify(patch)})
-    .then(function(){toast("Subagent removed","ok");_updateAgentLocal(id,patch);_showRestartBanner()}).catch(function(e){_updateAgentLocal(id,patch);toast("Subagent removed","ok");_showRestartBanner()});
+  api(_deferParam("agents/"+encodeURIComponent(id)),{method:"PUT",body:JSON.stringify(patch)})
+    .then(function(){toast("Subagent removed","ok");_updateAgentLocal(id,patch);_deferRestart("Subagent removed")}).catch(function(e){_updateAgentLocal(id,patch);toast("Subagent removed","ok");_deferRestart("Subagent removed")});
 }
 function saveSubagents(id){
   var allowed=V("sub-allow-"+id).split(",").map(function(s){return s.trim()}).filter(Boolean);
   var patch={subagents:{allowAgents:allowed}};
-  api("agents/"+encodeURIComponent(id),{method:"PUT",body:JSON.stringify(patch)})
-    .then(function(){toast("Saved","ok");_updateAgentLocal(id,patch);_showRestartBanner()}).catch(function(e){_updateAgentLocal(id,patch);toast("Saved","ok");_showRestartBanner()});
+  api(_deferParam("agents/"+encodeURIComponent(id)),{method:"PUT",body:JSON.stringify(patch)})
+    .then(function(){toast("Saved","ok");_updateAgentLocal(id,patch);_deferRestart("Subagents saved")}).catch(function(e){_updateAgentLocal(id,patch);toast("Saved","ok");_deferRestart("Subagents saved")});
 }
 function addPeer(id){
   var sel=Q("peer-picker-"+id);if(!sel||!sel.value)return;
@@ -3125,9 +3125,9 @@ function _saveGlobalPeers(peers,msg){
   }else{
     delete config.tools.agentToAgent;
   }
-  api("config",{method:"PUT",body:JSON.stringify({config:config})}).then(function(){
+  api("config?defer=1",{method:"PUT",body:JSON.stringify({config:config})}).then(function(){
     D.config=config;
-    toast(msg,"ok");_showRestartBanner();
+    toast(msg,"ok");_deferRestart("Peers updated");
     // Sync subagents: add new peers, remove departed peers
     _syncPeerSubagents(peers);
     // Clean up: remove departed peers from all agents' subagent lists
@@ -3145,9 +3145,9 @@ function _cleanupRemovedPeers(removedIds,currentPeers){
     var cleaned=cur.filter(function(s){return removedIds.indexOf(s)===-1});
     if(cleaned.length===cur.length)return;
     var patch={subagents:{allowAgents:cleaned}};
-    api("agents/"+encodeURIComponent(a.id),{method:"PUT",body:JSON.stringify(patch)})
-      .then(function(){_updateAgentLocal(a.id,patch);_showRestartBanner()})
-      .catch(function(){_showRestartBanner()});
+    api(_deferParam("agents/"+encodeURIComponent(a.id)),{method:"PUT",body:JSON.stringify(patch)})
+      .then(function(){_updateAgentLocal(a.id,patch);_deferRestart("Subagents synced")})
+      .catch(function(){_deferRestart("Subagents synced")});
   });
 }
 // Ensure every A2A peer agent has all other peers in its subagents.allowAgents
@@ -3160,9 +3160,9 @@ function _syncPeerSubagents(peers){
     if(needed.length===0)return;
     var updated=cur.concat(needed);
     var patch={subagents:{allowAgents:updated}};
-    api("agents/"+encodeURIComponent(a.id),{method:"PUT",body:JSON.stringify(patch)})
-      .then(function(){_updateAgentLocal(a.id,patch);_showRestartBanner()})
-      .catch(function(e){toast("Failed to sync subagents for "+a.id+": "+e.message,"err");_showRestartBanner()});
+    api(_deferParam("agents/"+encodeURIComponent(a.id)),{method:"PUT",body:JSON.stringify(patch)})
+      .then(function(){_updateAgentLocal(a.id,patch);_deferRestart("Subagents synced")})
+      .catch(function(e){toast("Failed to sync subagents for "+a.id+": "+e.message,"err");_deferRestart("Subagents synced")});
   });
 }
 
@@ -3373,7 +3373,7 @@ function saveOrchFlow(agentId){
 
   // Step 1: Save flow files (server auto-adds run_task_flow to agent's alsoAllow)
   var isUpdate=!!_orchFlowLoadedFromServer;
-  api("tasks/flows/save",{method:"POST",body:JSON.stringify({flow:flowDef,overwrite:isUpdate})})
+  api("tasks/flows/save?defer=1",{method:"POST",body:JSON.stringify({flow:flowDef,overwrite:isUpdate})})
     .then(function(r){
       if(r.error){toast(r.error,"err");return}
       _onOrchSaveSuccess(agentId,toolId,flowDef);
@@ -3398,7 +3398,7 @@ function saveOrchFlow(agentId){
 function _onOrchSaveSuccess(agentId,toolId,flowDef){
   _orchFlowLoadedFromServer=true;
   toast("Task flow saved","ok");
-  _showRestartBanner();
+  _deferRestart("Task flow saved");
   // Re-render to show persistent checklist
   var db=Q("drawer-body");
   if(db&&drawerAgent&&drawerTab==="orchestrator"){
@@ -3411,10 +3411,11 @@ function _onOrchSaveSuccess(agentId,toolId,flowDef){
 // ── Delete Flow ──
 function deleteOrchFlow(agentId,flowName){
   if(!confirm("Delete the task flow \""+flowName+"\"? This will remove the flow definition and disable the run_task_flow tool for this agent."))return;
-  api("tasks/flows/definition/"+encodeURIComponent(agentId)+"/"+encodeURIComponent(flowName),{method:"DELETE"})
+  api("tasks/flows/definition/"+encodeURIComponent(agentId)+"/"+encodeURIComponent(flowName)+"?defer=1",{method:"DELETE"})
     .then(function(r){
       if(r.error){toast(r.error,"err");return}
       toast("Flow deleted","ok");
+      _deferRestart("Task flow deleted");
       _orchFlow={name:"",description:"",steps:[]};
       _orchFlowLoadedFromServer=false;
       _orchFlowLoadedFor=null;
@@ -3554,8 +3555,8 @@ function renderDanger(a){
 }
 function deleteAgent(id){
   if(!confirm("Delete agent "+id+"?"))return;
-  api("agents/"+encodeURIComponent(id),{method:"DELETE"})
-    .then(function(){toast("Agent removed","ok");_showRestartBanner();closeDrawer()}).catch(function(e){toast(e.message,"err")});
+  api(_deferParam("agents/"+encodeURIComponent(id)),{method:"DELETE"})
+    .then(function(){toast("Agent removed","ok");_deferRestart("Agent removed");closeDrawer()}).catch(function(e){toast(e.message,"err")});
 }
 
 // ── Channels Page (top-level) ──
@@ -3639,7 +3640,6 @@ function renderChannelsPage(){
       h+='<span class="ch-card-acc-dot" style="background:'+(accEnabled?"var(--green)":"var(--red)")+'"></span>';
       h+='<span class="badge '+(chEnabled?"badge-green":"badge-red")+'" style="cursor:pointer;font-size:var(--fs-xs)" onclick="toggleChannelPage(\''+esc(ch)+'\','+(!chEnabled)+')">'+(chEnabled?"Online":"Off")+'</span>';
       h+='<button class="btn btn-sm" onclick="editAccountPage(\''+esc(ch)+'\',\''+esc(accName)+'\')">✎</button>';
-      h+='<button class="btn btn-sm" onclick="editChannelSettings(\''+esc(ch)+'\')">⚙</button>';
       h+='<button class="btn btn-sm btn-danger" onclick="deleteChannelPage(\''+esc(ch)+'\')">✕</button>';
       h+='</div></div>';
 
@@ -3697,21 +3697,21 @@ function renderChannelsPage(){
 }
 
 function toggleChannelPage(name,enabled){
-  api("channels/"+encodeURIComponent(name),{method:"PUT",body:JSON.stringify({enabled:enabled})}).then(function(){_showRestartBanner();setTimeout(renderChannelsPage,300)}).catch(function(e){toast(e.message,"err")});
+  api(_deferParam("channels/"+encodeURIComponent(name)),{method:"PUT",body:JSON.stringify({enabled:enabled})}).then(function(){_deferRestart("Channel "+(enabled?"enabled":"disabled"));setTimeout(renderChannelsPage,300)}).catch(function(e){toast(e.message,"err")});
 }
 function deleteChannelPage(name){
   if(!confirm("Remove channel "+name+" and all its bindings?"))return;
   // Also remove bindings for this channel
   var remaining=(D.bindings||[]).filter(function(b){return!(b.match&&b.match.channel===name)});
-  api("channels/"+encodeURIComponent(name),{method:"DELETE"}).then(function(){
-    return api("bindings",{method:"PUT",body:JSON.stringify({bindings:remaining})});
-  }).then(function(){toast("Channel removed","ok");_showRestartBanner();setTimeout(renderChannelsPage,300)}).catch(function(e){toast(e.message,"err")});
+  api(_deferParam("channels/"+encodeURIComponent(name)),{method:"DELETE"}).then(function(){
+    return api(_deferParam("bindings"),{method:"PUT",body:JSON.stringify({bindings:remaining})});
+  }).then(function(){toast("Channel removed","ok");_deferRestart("Channel removed");setTimeout(renderChannelsPage,300)}).catch(function(e){toast(e.message,"err")});
 }
 function removeBindingGlobal(gi){
   var all=(D.bindings||[]).slice();
   if(gi<0||gi>=all.length)return;
   all.splice(gi,1);
-  api("bindings",{method:"PUT",body:JSON.stringify({bindings:all})}).then(function(){toast("Rule removed","ok");_showRestartBanner();D.bindings=all;renderChannelsPage()}).catch(function(e){toast(e.message,"err")});
+  api(_deferParam("bindings"),{method:"PUT",body:JSON.stringify({bindings:all})}).then(function(){toast("Rule removed","ok");_deferRestart("Binding removed");D.bindings=all;renderChannelsPage()}).catch(function(e){toast(e.message,"err")});
 }
 
 // ── Channel Configure / Add / Routing (new implementation) ──
@@ -3932,8 +3932,8 @@ function saveChannelSettings(chName){
     else if(v)ch[f.key]=v;
     else delete ch[f.key];
   });
-  api("config",{method:"PUT",body:JSON.stringify({config:config})})
-    .then(function(){toast("Settings saved","ok");_showRestartBanner();closeModal();setTimeout(renderChannelsPage,300)})
+  api("config?defer=1",{method:"PUT",body:JSON.stringify({config:config})})
+    .then(function(){toast("Settings saved","ok");_deferRestart("Channel settings saved");closeModal();setTimeout(renderChannelsPage,300)})
     .catch(function(e){toast(e.message,"err")});
 }
 
@@ -3963,6 +3963,23 @@ function editAccountPage(chName,accName){
       h+=renderFieldInput(prefix,f,accData[f.key]||"");
     });
     h+='</div>';
+  }
+
+  // ── Channel Settings (collapsible, merged from channel-level config) ──
+  var chFields=(CH_CHANNEL_FIELDS[chName]||[]).filter(function(f){return f.key!=="defaultAccount"});
+  if(chFields.length>0){
+    h+='<div class="collapsible">';
+    h+='<div class="collapsible-head" onclick="var b=this.nextElementSibling;b.style.display=b.style.display===\'none\'?\'block\':\'none\';this.querySelector(\'.ea-chev\').textContent=b.style.display===\'none\'?\'▸\':\'▾\'">';
+    h+='<span class="ea-chev collapsible-chevron">▾</span>';
+    h+='<span class="collapsible-label">Channel Settings</span>';
+    h+='</div>';
+    h+='<div style="padding:0 14px 12px">';
+    h+='<div class="fg-row">';
+    chFields.forEach(function(f){
+      h+=renderFieldInput(prefix+"ch-",f,cfg[f.key]||"");
+    });
+    h+='</div>';
+    h+='</div></div>';
   }
 
   // Discord-specific collapsible sections
@@ -4139,8 +4156,8 @@ function doAddBinding(chName){
   }
 
   var all=(D.bindings||[]).concat([{agentId:agentId,match:match}]);
-  api("bindings",{method:"PUT",body:JSON.stringify({bindings:all})}).then(function(){
-    toast("Binding added","ok");_showRestartBanner();D.bindings=all;closeModal();renderChannelsPage();
+  api(_deferParam("bindings"),{method:"PUT",body:JSON.stringify({bindings:all})}).then(function(){
+    toast("Binding added","ok");_deferRestart("Binding added");D.bindings=all;closeModal();renderChannelsPage();
   }).catch(function(e){toast(e.message,"err")});
 }
 
@@ -4265,8 +4282,8 @@ function doEditBinding(gi){
 
   var all=(D.bindings||[]).slice();
   all[gi]={agentId:agentId,match:match};
-  api("bindings",{method:"PUT",body:JSON.stringify({bindings:all})}).then(function(){
-    toast("Binding updated","ok");_showRestartBanner();D.bindings=all;closeModal();renderChannelsPage();
+  api(_deferParam("bindings"),{method:"PUT",body:JSON.stringify({bindings:all})}).then(function(){
+    toast("Binding updated","ok");_deferRestart("Binding updated");D.bindings=all;closeModal();renderChannelsPage();
   }).catch(function(e){toast(e.message,"err")});
 }
 
@@ -4333,8 +4350,18 @@ function saveAccountConfig(chName,accName){
   }
 
   config.channels[chName].accounts[accName]=obj;
-  api("config",{method:"PUT",body:JSON.stringify({config:config})})
-    .then(function(){toast("Account saved","ok");_showRestartBanner();closeModal();setTimeout(renderChannelsPage,300)})
+  // Also save channel-level fields if present
+  var chFields=CH_CHANNEL_FIELDS[chName]||[];
+  chFields.forEach(function(f){
+    var el=Q("ea-ch-"+f.key);
+    if(!el)return;
+    var v=el.value.trim();
+    if(f.type==="checkbox"){config.channels[chName][f.key]=el.checked}
+    else if(v)config.channels[chName][f.key]=v;
+    else delete config.channels[chName][f.key];
+  });
+  api("config?defer=1",{method:"PUT",body:JSON.stringify({config:config})})
+    .then(function(){toast("Account saved","ok");_deferRestart("Account saved");closeModal();setTimeout(renderChannelsPage,300)})
     .catch(function(e){toast(e.message,"err")});
 }
 
@@ -4344,8 +4371,8 @@ function deleteAccount(chName,accName){
   if(config.channels&&config.channels[chName]&&config.channels[chName].accounts){
     delete config.channels[chName].accounts[accName];
   }
-  api("config",{method:"PUT",body:JSON.stringify({config:config})})
-    .then(function(){toast("Account deleted","ok");_showRestartBanner();closeModal();setTimeout(renderChannelsPage,300)})
+  api("config?defer=1",{method:"PUT",body:JSON.stringify({config:config})})
+    .then(function(){toast("Account deleted","ok");_deferRestart("Account deleted");closeModal();setTimeout(renderChannelsPage,300)})
     .catch(function(e){toast(e.message,"err")});
 }
 
@@ -4406,8 +4433,8 @@ function doAddAccount(chName){
   if(!config.channels[chName].accounts)config.channels[chName].accounts={};
   config.channels[chName].accounts[accName]=obj;
   config.channels[chName].enabled=true;
-  api("config",{method:"PUT",body:JSON.stringify({config:config})})
-    .then(function(){toast("Account added","ok");_showRestartBanner();closeModal();setTimeout(renderChannelsPage,300)})
+  api("config?defer=1",{method:"PUT",body:JSON.stringify({config:config})})
+    .then(function(){toast("Account added","ok");_deferRestart("Account added");closeModal();setTimeout(renderChannelsPage,300)})
     .catch(function(e){toast(e.message,"err")});
 }
 
@@ -4657,8 +4684,8 @@ function saveModels(){
     toast("Renamed: "+renameList.join(", "),"info");
   }
 
-  api("config",{method:"PUT",body:JSON.stringify({config:config})})
-    .then(function(){toast("Models saved","ok");_showRestartBanner();closePagePanel()}).catch(function(e){toast(e.message,"err")});
+  api("config?defer=1",{method:"PUT",body:JSON.stringify({config:config})})
+    .then(function(){toast("Models saved","ok");_deferRestart("Models saved");closePagePanel()}).catch(function(e){toast(e.message,"err")});
 }
 
 // ── Global actions ──
@@ -4684,9 +4711,9 @@ function createAgent(){
   if(!id){toast("Agent ID required","err");return}
   var body={id:id,name:name||id};
   if(model)body.model=model;if(ws)body.workspace=ws;if(isDef)body["default"]=true;
-  api("agents",{method:"POST",body:JSON.stringify(body)})
+  api(_deferParam("agents"),{method:"POST",body:JSON.stringify(body)})
     .then(function(r){
-      toast("Agent created","ok");_showRestartBanner();closePagePanel();
+      toast("Agent created","ok");_deferRestart("Agent created");closePagePanel();
       // Add to local data without reloading from gateway
       var newAgent=r.agent||body;
       if(!D.agents)D.agents=[];
@@ -4705,13 +4732,13 @@ function showRawConfig(){
     var config;
     try{config=JSON.parse(raw)}catch(e){config=D.config||{}}
     D.config=config;
-    _showRawConfigUI(config);
+    _showRawConfigUI(config,d.hasPending);
   }).catch(function(){
     // Fallback to in-memory
     _showRawConfigUI(D.config||{});
   });
 }
-function _showRawConfigUI(config){
+function _showRawConfigUI(config,hasPending){
   var sections=Object.keys(config);
   // Structured documentation database (sourced from OpenClaw Configuration Reference)
   var SECTION_DOCS={
@@ -4930,6 +4957,11 @@ function _showRawConfigUI(config){
 
   // Left: section list + editors
   h+='<div id="cfg-editor-main" class="flex-1">';
+
+  // Pending changes notice
+  if(hasPending){
+    h+='<div class="cfg-pending-notice">⏳ You are editing staged changes that haven\'t been applied yet. Save here to update the staged config, then use "Apply &amp; Restart" to push to the gateway.</div>';
+  }
 
   // Toolbar
   h+='<div class="cfg-toolbar">';
@@ -5310,13 +5342,13 @@ function cfgViewRawFullscreen(){
   openFsEditorDirect("Raw Configuration (Full JSON)",raw,true,function(newVal){
     try{
       var parsed=JSON.parse(newVal);
-      api("config",{method:"PUT",body:JSON.stringify({raw:newVal})}).then(function(r){
+      api("config?defer=1",{method:"PUT",body:JSON.stringify({raw:newVal})}).then(function(r){
         _closeFsOverlay();
         if(r.error){toast(r.error,"err");return}
         D.config=parsed;
         showRawConfig();
-        toast("Config saved to disk","ok");
-        _showRestartBanner();
+        toast("Config saved","ok");
+        _deferRestart("Config saved");
       }).catch(function(e){_closeFsOverlay();toast("Save failed: "+e.message,"err")});
     }catch(e){_closeFsOverlay();toast("Invalid JSON: "+e.message,"err")}
   });
@@ -5366,12 +5398,12 @@ function cfgSave(){
   function done(){_unlockProgress()}
 
   function doSaveOnly(){
-    api("config",{method:"PUT",body:JSON.stringify({config:config}),_quiet:true}).then(function(){
+    api("config?defer=1",{method:"PUT",body:JSON.stringify({config:config}),_quiet:true}).then(function(){
       D.config=config;
       _refreshToolRegistry();
       done();
-      toast("Config saved to disk","ok");
-      _showRestartBanner();
+      toast("Config saved","ok");
+      _deferRestart("Config saved");
       if(statusEl)statusEl.innerHTML='<span style="color:var(--green)">✓ Saved</span>';
       load();
     }).catch(function(e){
@@ -5483,8 +5515,97 @@ function _showProgress(){var el=Q("progress-bar");if(el)el.classList.add("active
 function _hideProgress(){if(_progressLocked)return;var el=Q("progress-bar");if(el)el.classList.remove("active")}
 function _lockProgress(){_progressLocked=true;_showProgress()}
 function _unlockProgress(){_progressLocked=false;_hideProgress()}
+
+// ── Deferred restart system ──
+// Instead of triggering a gateway restart after every config change,
+// changes are staged server-side and the user can apply them all at once.
+var _pendingChangeCount=0;
+
+function _deferRestart(description){
+  _pendingChangeCount++;
+  _showPendingBanner();
+  toast(description||"Change staged","ok");
+}
+
+function _showPendingBanner(){
+  var existing=Q("pending-changes-banner");
+  if(existing){
+    // Update the count
+    var countEl=existing.querySelector(".pending-count");
+    if(countEl)countEl.textContent=_pendingChangeCount;
+    return;
+  }
+  var b=document.createElement("div");b.id="pending-changes-banner";
+  b.className="oc-banner bottom pending-bg";
+  b.innerHTML='<div class="oc-banner-body">'
+    +'<span class="pending-icon">⏳</span> '
+    +'<span class="pending-count">'+_pendingChangeCount+'</span> pending change(s) — gateway restart required to apply'
+    +'</div>'
+    +'<div class="oc-banner-actions">'
+    +'<button class="btn-banner primary" onclick="_commitAndRestart()">Apply &amp; Restart</button>'
+    +'<button class="btn-banner ghost" onclick="_discardPending()">Discard</button>'
+    +'</div>';
+  document.body.appendChild(b);
+}
+
+function _hidePendingBanner(){
+  var el=Q("pending-changes-banner");if(el)el.remove();
+  _pendingChangeCount=0;
+}
+
+function _commitAndRestart(){
+  _hidePendingBanner();
+  _lockProgress();
+  _showRestartOverlay();
+  api("config/commit",{method:"POST"}).then(function(r){
+    if(r.ok){
+      _waitForGateway(function(){
+        _unlockProgress();
+        _hideRestartOverlay();
+        load();
+      });
+    }else{
+      _unlockProgress();
+      _hideRestartOverlay();
+      toast(r.error||"Nothing to commit","err");
+    }
+  }).catch(function(e){
+    // Commit wrote to disk → gateway is restarting → API call may fail
+    _waitForGateway(function(){
+      _unlockProgress();
+      _hideRestartOverlay();
+      load();
+    });
+  });
+}
+
+function _discardPending(){
+  api("config/pending",{method:"DELETE",_quiet:true}).then(function(){
+    _hidePendingBanner();
+    toast("Pending changes discarded","ok");
+    load();
+  }).catch(function(){
+    _hidePendingBanner();
+  });
+}
+
+// Check for pending changes on load (e.g. after page refresh)
+function _checkPendingOnLoad(){
+  api("config/pending",{_quiet:true}).then(function(r){
+    if(r.hasPending){
+      _pendingChangeCount=r.changeCount;
+      _showPendingBanner();
+    }
+  }).catch(function(){});
+}
+
+// Helper: append ?defer=1 to an API path
+function _deferParam(path){
+  return path+(path.indexOf("?")>-1?"&":"?")+"defer=1";
+}
+
 function _showRestartBanner(){
-  // Config was written → gateway auto-restarts. Show overlay and wait for it to come back.
+  // Legacy: immediate restart (used only for explicit restart button)
   _lockProgress();
   _hideRestartBanner();
   _showRestartOverlay();
@@ -6457,10 +6578,13 @@ function doCreateCronJob(){
 }
 function deleteCronJob(id,name){
   if(!confirm('Delete cron job "'+name+'"? This cannot be undone.'))return;
-  api("tasks/"+encodeURIComponent(id),{method:"DELETE"})
+  var isHeartbeat=id.indexOf("heartbeat:")===0;
+  var endpoint=isHeartbeat?_deferParam("tasks/"+encodeURIComponent(id)):"tasks/"+encodeURIComponent(id);
+  api(endpoint,{method:"DELETE"})
     .then(function(r){
       if(r.error){toast(r.error,"err");return}
       toast("Cron job deleted","ok");
+      if(isHeartbeat)_deferRestart("Heartbeat disabled");
       _tasksCache=_tasksCache.filter(function(t){return t.id!==id});
       renderTasksPanel();
     })
@@ -7022,9 +7146,9 @@ function _loadApiStatusInto(targetEl){
 
 function removeAuthProfile(profileKey,source,providerName){
   if(!confirm("Remove auth profile for "+providerName+"?\n\nProfile: "+profileKey+"\nSource: "+source+"\n\nThis will delete the stored token/key from ALL locations."))return;
-  api("auth/profile",{method:"DELETE",body:JSON.stringify({profileKey:profileKey,source:source})})
+  api("auth/profile?defer=1",{method:"DELETE",body:JSON.stringify({profileKey:profileKey,source:source})})
     .then(function(d){
-      if(d.deleted){toast("Removed "+providerName+" from: "+(d.deletedFrom||[]).join(", "),"ok")}
+      if(d.deleted){toast("Removed "+providerName+" from: "+(d.deletedFrom||[]).join(", "),"ok");_deferRestart("Auth profile removed")}
       else{toast("Profile not found (may already be removed)","info")}
       // Force cache rebuild then reload the page
       api("models/status/refresh",{method:"POST"}).then(function(){
@@ -7100,7 +7224,7 @@ function saveEditedApiKey(envVar,providerName){
       toast("Updated "+envVar,"ok");
       closeModal();
       _forceRefreshApiStatus();
-      _showRestartBanner();
+      _deferRestart("API key updated");
     })
     .catch(function(e){_hideProgress();toast("Failed: "+e.message,"err")});
 }
@@ -7165,7 +7289,7 @@ function saveNewApiKey(){
       toast((d.updated?"Updated":"Added")+" "+envVar,"ok");
       closeModal();
       _forceRefreshApiStatus();
-      _showRestartBanner();
+      _deferRestart("API key added");
       _runHealthCheck();
     })
     .catch(function(e){_hideProgress();toast("Failed: "+e.message,"err")});

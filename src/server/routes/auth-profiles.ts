@@ -6,6 +6,8 @@ import {
     parseBody,
     readConfig,
     writeConfig,
+    stageConfig,
+    readEffectiveConfig,
     readEnv,
     execAsync,
     tryReadFile,
@@ -72,10 +74,15 @@ export async function handleAuthProfileRoutes(
 
         // Also remove from openclaw.json auth.profiles
         try {
-            const config = readConfig();
+            const defer = _url.searchParams?.get("defer") === "1";
+            const config = defer ? readEffectiveConfig() : readConfig();
             if (config.auth?.profiles?.[profileKey]) {
                 delete config.auth.profiles[profileKey];
-                writeConfig(config);
+                if (defer) {
+                    stageConfig(config, "Remove auth profile: " + profileKey);
+                } else {
+                    writeConfig(config);
+                }
                 deleted = true;
                 deletedFrom.push("openclaw.json (auth.profiles)");
             }

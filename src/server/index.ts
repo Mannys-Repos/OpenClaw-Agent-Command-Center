@@ -346,6 +346,9 @@ export default function register(api: any) {
                     server.close();
                     _currentServer = null;
                     _serverStarted = false;
+                    // Clear in-memory caches to free memory on shutdown
+                    _stateCache.clear();
+                    _flowDefCache.clear();
                     api.logger.info("[agent-dashboard] Dashboard server stopped");
                 }
             },
@@ -395,6 +398,8 @@ export default function register(api: any) {
     // ── In-memory caches to avoid redundant disk I/O ──
     const _stateCache = new Map<string, FlowExecState>();
     const _flowDefCache = new Map<string, { def: any; mtime: number }>();
+    const STATE_CACHE_MAX = 100;
+    const FLOW_DEF_CACHE_MAX = 50;
 
     function stateFilePath(token: string): string {
         return join(FLOW_STATE_DIR, `${token}.json`);
@@ -402,6 +407,16 @@ export default function register(api: any) {
 
     function saveFlowState(state: FlowExecState): void {
         _stateCache.set(state.token, state);
+        // Evict oldest entries when cache exceeds limit
+        if (_stateCache.size > STATE_CACHE_MAX) {
+            const excess = _stateCache.size - STATE_CACHE_MAX;
+            let removed = 0;
+            for (const k of _stateCache.keys()) {
+                if (removed >= excess) break;
+                _stateCache.delete(k);
+                removed++;
+            }
+        }
         writeFileSync(stateFilePath(state.token), JSON.stringify(state), "utf-8");
     }
 
@@ -452,6 +467,16 @@ export default function register(api: any) {
             const content = readFileSync(flowFilePath, "utf-8");
             const def = parseFlowDefinitionFile(content);
             _flowDefCache.set(flowName, { def, mtime });
+            // Evict oldest entries when cache exceeds limit
+            if (_flowDefCache.size > FLOW_DEF_CACHE_MAX) {
+                const excess = _flowDefCache.size - FLOW_DEF_CACHE_MAX;
+                let removed = 0;
+                for (const k of _flowDefCache.keys()) {
+                    if (removed >= excess) break;
+                    _flowDefCache.delete(k);
+                    removed++;
+                }
+            }
             return def;
         } catch { return null; }
     }

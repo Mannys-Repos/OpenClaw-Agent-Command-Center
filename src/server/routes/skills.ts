@@ -6,6 +6,8 @@ import {
     parseBody,
     readConfig,
     writeConfig,
+    stageConfig,
+    readEffectiveConfig,
     getAgentWorkspace,
     OPENCLAW_DIR,
     execAsync,
@@ -167,7 +169,7 @@ export async function handleSkillRoutes(
     const listMatch = path.match(/^\/skills\/([^/]+)$/);
     if (listMatch && method === "GET") {
         const agentId = decodeURIComponent(listMatch[1]);
-        const config = readConfig();
+        const config = readEffectiveConfig();
         const agentsList = config.agents?.list || [];
         let agent = agentsList.find((a: any) => a.id === agentId);
         if (!agent && agentId === "main") agent = { id: "main" };
@@ -218,7 +220,7 @@ export async function handleSkillRoutes(
         const { source, identifier, scope } = body;
         if (!identifier?.trim()) return json(res, 400, { error: "identifier required" }), true;
 
-        const config = readConfig();
+        const config = readEffectiveConfig();
         const agentsList = config.agents?.list || [];
         let agent = agentsList.find((a: any) => a.id === agentId);
         if (!agent && agentId === "main") agent = { id: "main" };
@@ -296,7 +298,7 @@ export async function handleSkillRoutes(
         if (!isSafeDirName(dirName)) return json(res, 403, { error: "Invalid skill name" }), true;
 
         const scope = _url.searchParams?.get("scope") || "workspace";
-        const config = readConfig();
+        const config = readEffectiveConfig();
         const agentsList = config.agents?.list || [];
         let agent = agentsList.find((a: any) => a.id === agentId);
         if (!agent && agentId === "main") agent = { id: "main" };
@@ -321,7 +323,7 @@ export async function handleSkillRoutes(
         const scope = body.scope || "workspace";
         if (scope === "bundled") return json(res, 403, { error: "Cannot modify bundled skills" }), true;
 
-        const config = readConfig();
+        const config = readEffectiveConfig();
         const agentsList = config.agents?.list || [];
         let agent = agentsList.find((a: any) => a.id === agentId);
         if (!agent && agentId === "main") agent = { id: "main" };
@@ -350,8 +352,14 @@ export async function handleSkillRoutes(
 
         // Sync SKILLS.md before writing config (writeConfig triggers gateway restart)
         syncSkillsToWorkspace(agentId, config);
-        writeConfig(config);
-        json(res, 200, { ok: true });
+        const defer = _url.searchParams?.get("defer") === "1";
+        if (defer) {
+            stageConfig(config, "Update skill: " + dirName);
+            json(res, 200, { ok: true, deferred: true });
+        } else {
+            writeConfig(config);
+            json(res, 200, { ok: true });
+        }
         return true;
     }
 
@@ -365,7 +373,7 @@ export async function handleSkillRoutes(
         const scope = _url.searchParams?.get("scope") || "workspace";
         if (scope === "bundled") return json(res, 403, { error: "Cannot delete bundled skills" }), true;
 
-        const config = readConfig();
+        const config = readEffectiveConfig();
         const agentsList = config.agents?.list || [];
         let agent = agentsList.find((a: any) => a.id === agentId);
         if (!agent && agentId === "main") agent = { id: "main" };
@@ -394,15 +402,20 @@ export async function handleSkillRoutes(
         writeSkillsConfig(skillsCfg);
 
         // When enabling a skill, ensure read tool is available for the agent
-        const config = readConfig();
+        const config = readEffectiveConfig();
         if (body.enabled) {
             await ensureReadFileAllowed(config, agentId);
-            writeConfig(config);
+            const defer = _url.searchParams?.get("defer") === "1";
+            if (defer) {
+                stageConfig(config, (body.enabled ? "Enable" : "Disable") + " skill: " + dirName);
+            } else {
+                writeConfig(config);
+            }
         }
 
         // Sync SKILLS.md
         syncSkillsToWorkspace(agentId, config);
-        json(res, 200, { ok: true });
+        json(res, 200, { ok: true, deferred: body.enabled && _url.searchParams?.get("defer") === "1" });
         return true;
     }
 

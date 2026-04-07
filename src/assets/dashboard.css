@@ -3073,10 +3073,38 @@ html {
 
 /* ── Second pass: remaining utility classes ── */
 
-/* Banners — restart, model-limit */
+/* Banners — restart, model-limit, pending changes */
 .oc-banner.restart-bg {
   background: #1a2733;
   border-top: 2px solid #00bfa5
+}
+
+.oc-banner.pending-bg {
+  background: #1a2033;
+  border-top: 2px solid #7c6cf0;
+  animation: pending-pulse 2s ease-in-out infinite
+}
+
+@keyframes pending-pulse {
+
+  0%,
+  100% {
+    border-top-color: #7c6cf0
+  }
+
+  50% {
+    border-top-color: #a090ff
+  }
+}
+
+.pending-icon {
+  font-size: 1.1em;
+  margin-right: 4px
+}
+
+.pending-count {
+  font-weight: 700;
+  color: #a090ff
 }
 
 .oc-banner.limit-bg {
@@ -3421,6 +3449,16 @@ html {
   max-width: 1600px;
   min-height: calc(100vh - 180px);
   overflow: hidden
+}
+
+.cfg-pending-notice {
+  padding: 8px 14px;
+  margin-bottom: 10px;
+  background: rgba(124, 108, 240, .1);
+  border: 1px solid rgba(124, 108, 240, .3);
+  border-radius: var(--radius);
+  font-size: var(--fs-sm);
+  color: #b0a0ff
 }
 
 .cfg-toolbar {

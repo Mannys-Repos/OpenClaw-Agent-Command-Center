@@ -9,6 +9,8 @@ import {
     parseBody,
     readConfig,
     writeConfig,
+    stageConfig,
+    readEffectiveConfig,
     getAgentWorkspace,
     execAsync,
     shellEsc,
@@ -132,7 +134,7 @@ export async function handleTaskRoutes(
         const cached = getCachedCli("tasks-list");
         if (cached) { json(res, 200, cached); return true; }
 
-        const config = readConfig();
+        const config = readEffectiveConfig();
         const agents = config.agents?.list || [];
 
         // Cron jobs from OpenClaw CLI
@@ -234,12 +236,20 @@ export async function handleTaskRoutes(
         // Handle heartbeat disable (still in openclaw.json)
         const hbMatch = taskId.match(/^heartbeat:(.+)$/);
         if (hbMatch) {
-            const config = readConfig();
+            const defer = url.searchParams?.get("defer") === "1";
+            const config = defer ? readEffectiveConfig() : readConfig();
             const agentId = hbMatch[1];
             const agent = (config.agents?.list || []).find((a: any) => a.id === agentId);
-            if (agent?.heartbeat) { agent.heartbeat.enabled = false; writeConfig(config); }
+            if (agent?.heartbeat) {
+                agent.heartbeat.enabled = false;
+                if (defer) {
+                    stageConfig(config, "Disable heartbeat: " + agentId);
+                } else {
+                    writeConfig(config);
+                }
+            }
             deleteCachedCli("tasks-list");
-            json(res, 200, { ok: true });
+            json(res, 200, { ok: true, deferred: defer });
             return true;
         }
 
@@ -315,10 +325,18 @@ export async function handleTaskRoutes(
         // Heartbeat disable (still in openclaw.json — heartbeats are agent config)
         const hbMatch = taskId.match(/^heartbeat:(.+)$/);
         if (hbMatch) {
-            const config = readConfig();
+            const defer = url.searchParams?.get("defer") === "1";
+            const config = defer ? readEffectiveConfig() : readConfig();
             const agentId = hbMatch[1];
             const agent = (config.agents?.list || []).find((a: any) => a.id === agentId);
-            if (agent?.heartbeat) { agent.heartbeat.enabled = false; writeConfig(config); }
+            if (agent?.heartbeat) {
+                agent.heartbeat.enabled = false;
+                if (defer) {
+                    stageConfig(config, "Cancel heartbeat: " + agentId);
+                } else {
+                    writeConfig(config);
+                }
+            }
         }
         // For cron jobs, remove them
         try {
@@ -379,7 +397,8 @@ export async function handleTaskRoutes(
 
         // Auto-add run_task_flow to the agent's alsoAllow if not already present
         try {
-            const config = readConfig();
+            const defer = url.searchParams?.get("defer") === "1";
+            const config = defer ? readEffectiveConfig() : readConfig();
             const agents = config.agents?.list || [];
             const agent = agents.find((a: any) => a.id === flow.agentId);
             if (agent) {
@@ -388,7 +407,11 @@ export async function handleTaskRoutes(
                 if (!also.includes(TASK_FLOW_TOOL_ID)) {
                     if (!agent.tools) agent.tools = {};
                     agent.tools.alsoAllow = [...also, TASK_FLOW_TOOL_ID];
-                    writeConfig(config);
+                    if (defer) {
+                        stageConfig(config, "Add run_task_flow tool to agent: " + flow.agentId);
+                    } else {
+                        writeConfig(config);
+                    }
                 }
             }
         } catch (_e: any) {
@@ -708,7 +731,7 @@ export async function handleTaskRoutes(
 
         // 2. Fallback: parse the agent's AGENTS.md, generate + persist the .flow.ts definition
         try {
-            const config = readConfig();
+            const config = readEffectiveConfig();
             const agentsList = config.agents?.list || [];
             let agent = agentsList.find((a: any) => a.id === agentId);
             if (!agent && agentId === "main") agent = { id: "main" };
@@ -778,7 +801,8 @@ export async function handleTaskRoutes(
         // Remove run_task_flow from alsoAllow if no other flows remain for this agent
         if (!hasOtherFlows) {
             try {
-                const config = readConfig();
+                const defer = url.searchParams?.get("defer") === "1";
+                const config = defer ? readEffectiveConfig() : readConfig();
                 const agents = config.agents?.list || [];
                 const agent = agents.find((a: any) => a.id === agentId);
                 if (agent) {
@@ -788,7 +812,11 @@ export async function handleTaskRoutes(
                     if (idx >= 0) {
                         if (!agent.tools) agent.tools = {};
                         agent.tools.alsoAllow = also.filter((t: string) => t !== TASK_FLOW_TOOL_ID);
-                        writeConfig(config);
+                        if (defer) {
+                            stageConfig(config, "Remove run_task_flow tool from agent: " + agentId);
+                        } else {
+                            writeConfig(config);
+                        }
                     }
                 }
             } catch { }

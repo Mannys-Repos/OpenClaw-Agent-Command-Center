@@ -6,6 +6,11 @@ import {
     readConfig,
     getConfigError,
     writeConfig,
+    stageConfig,
+    commitPendingConfig,
+    discardPendingConfig,
+    getPendingConfig,
+    readEffectiveConfig,
     execAsync,
     tryReadFile,
     CONFIG_PATH,
@@ -22,11 +27,20 @@ export async function handleConfigRoutes(
 
     // ─── Config read/write ───
     if (path === "/config" && method === "GET") {
-        const config = readConfig();
-        json(res, 200, { config, configError: getConfigError() });
+        const pending = getPendingConfig();
+        const config = pending ? pending.config : readConfig();
+        json(res, 200, { config, configError: getConfigError(), hasPending: !!pending });
         return true;
     }
     if (path === "/config/raw" && method === "GET") {
+        // If there are pending staged changes, return those as the raw JSON
+        // so the editor shows what the user has been working on, not the stale disk version.
+        const pending = getPendingConfig();
+        if (pending) {
+            const raw = JSON.stringify(pending.config, null, 2);
+            json(res, 200, { raw, configError: null, hasPending: true });
+            return true;
+        }
         const raw = tryReadFile(CONFIG_PATH);
         if (raw === null) { json(res, 200, { raw: "{}", configError: null }); return true; }
         readConfig(); // trigger parse to populate error
@@ -35,12 +49,18 @@ export async function handleConfigRoutes(
     }
     if (path === "/config" && method === "PUT") {
         const body = await parseBody(req);
+        const defer = url.searchParams?.get("defer") === "1";
         // Support raw text save (for fixing broken JSON)
         if (typeof body.raw === "string") {
             try {
                 JSON.parse(body.raw); // validate first
-                writeFileSync(CONFIG_PATH, body.raw, "utf-8");
-                json(res, 200, { ok: true });
+                if (defer) {
+                    stageConfig(JSON.parse(body.raw), body.description || "Raw config edit");
+                    json(res, 200, { ok: true, deferred: true });
+                } else {
+                    writeFileSync(CONFIG_PATH, body.raw, "utf-8");
+                    json(res, 200, { ok: true });
+                }
                 return true;
             } catch (e: any) {
                 json(res, 400, { error: "Invalid JSON: " + e.message });
@@ -48,8 +68,13 @@ export async function handleConfigRoutes(
             }
         }
         if (!body.config) { json(res, 400, { error: "config required" }); return true; }
-        writeConfig(body.config);
-        json(res, 200, { ok: true });
+        if (defer) {
+            stageConfig(body.config, body.description || "Config update");
+            json(res, 200, { ok: true, deferred: true });
+        } else {
+            writeConfig(body.config);
+            json(res, 200, { ok: true });
+        }
         return true;
     }
     if (path === "/config/restart" && method === "POST") {
@@ -61,6 +86,35 @@ export async function handleConfigRoutes(
             // (e.g. the process exiting causes execAsync to reject)
         }
         json(res, 200, { ok: true, warning: "restart signal sent" });
+        return true;
+    }
+
+    // ─── GET /api/config/pending — check for staged changes ───
+    if (path === "/config/pending" && method === "GET") {
+        const pending = getPendingConfig();
+        if (!pending) {
+            json(res, 200, { hasPending: false, changeCount: 0, descriptions: [] });
+        } else {
+            json(res, 200, { hasPending: true, changeCount: pending.changeCount, descriptions: pending.descriptions });
+        }
+        return true;
+    }
+
+    // ─── POST /api/config/commit — write staged config to disk and restart ───
+    if (path === "/config/commit" && method === "POST") {
+        const committed = commitPendingConfig();
+        if (!committed) {
+            json(res, 200, { ok: false, error: "No pending changes to commit" });
+            return true;
+        }
+        json(res, 200, { ok: true });
+        return true;
+    }
+
+    // ─── DELETE /api/config/pending — discard staged changes ───
+    if (path === "/config/pending" && method === "DELETE") {
+        discardPendingConfig();
+        json(res, 200, { ok: true });
         return true;
     }
 
@@ -165,12 +219,20 @@ export async function handleConfigRoutes(
     const chMatch = path.match(/^\/channels\/([^/]+)$/);
     if (chMatch && method === "DELETE") {
         const chName = decodeURIComponent(chMatch[1]);
-        const config = readConfig();
+        const defer = url.searchParams?.get("defer") === "1";
+        const config = defer ? readEffectiveConfig() : readConfig();
         if (config.channels && config.channels[chName]) {
             delete config.channels[chName];
-            writeConfig(config);
+            if (defer) {
+                stageConfig(config, "Remove channel: " + chName);
+                json(res, 200, { ok: true, deferred: true });
+            } else {
+                writeConfig(config);
+                json(res, 200, { ok: true });
+            }
+        } else {
+            json(res, 200, { ok: true });
         }
-        json(res, 200, { ok: true });
         return true;
     }
 
@@ -178,12 +240,18 @@ export async function handleConfigRoutes(
     if (chMatch && method === "PUT") {
         const chName = decodeURIComponent(chMatch[1]);
         const body = await parseBody(req);
-        const config = readConfig();
+        const defer = url.searchParams?.get("defer") === "1";
+        const config = defer ? readEffectiveConfig() : readConfig();
         if (!config.channels) config.channels = {};
         if (!config.channels[chName]) config.channels[chName] = {};
         Object.assign(config.channels[chName], body);
-        writeConfig(config);
-        json(res, 200, { ok: true });
+        if (defer) {
+            stageConfig(config, "Update channel: " + chName);
+            json(res, 200, { ok: true, deferred: true });
+        } else {
+            writeConfig(config);
+            json(res, 200, { ok: true });
+        }
         return true;
     }
 

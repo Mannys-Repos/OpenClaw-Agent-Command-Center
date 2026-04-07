@@ -27,19 +27,43 @@ export const WORKSPACE_MD_FILES = [
 // ─── CLI result cache — avoids re-spawning slow child processes on rapid page loads ───
 const _cliCache = new Map<string, { data: any; expires: number }>();
 const CLI_CACHE_TTL = 15_000; // 15 seconds
+const CLI_CACHE_MAX_SIZE = 50; // hard cap to prevent unbounded growth
 
 export function getCachedCli(key: string): any | null {
     const entry = _cliCache.get(key);
     if (entry && Date.now() < entry.expires) return entry.data;
+    // Expired — remove it immediately
+    if (entry) _cliCache.delete(key);
     return null;
 }
 
 export function setCachedCli(key: string, data: any): void {
     _cliCache.set(key, { data, expires: Date.now() + CLI_CACHE_TTL });
+    // Evict expired entries when cache grows beyond limit
+    if (_cliCache.size > CLI_CACHE_MAX_SIZE) {
+        _pruneCliCache();
+    }
 }
 
 export function deleteCachedCli(key: string): void {
     _cliCache.delete(key);
+}
+
+function _pruneCliCache(): void {
+    const now = Date.now();
+    for (const [k, v] of _cliCache) {
+        if (now >= v.expires) _cliCache.delete(k);
+    }
+    // If still over limit after expiry sweep, drop oldest entries
+    if (_cliCache.size > CLI_CACHE_MAX_SIZE) {
+        const excess = _cliCache.size - CLI_CACHE_MAX_SIZE;
+        let removed = 0;
+        for (const k of _cliCache.keys()) {
+            if (removed >= excess) break;
+            _cliCache.delete(k);
+            removed++;
+        }
+    }
 }
 
 // ─── Config I/O ───
@@ -100,6 +124,54 @@ export function getConfigError(): string | null { return _configError; }
 
 export function writeConfig(config: any): void {
     writeFileSync(CONFIG_PATH, JSON.stringify(config, null, 2), "utf-8");
+}
+
+// ─── Deferred config staging ───
+// Holds a pending config snapshot that hasn't been written to disk yet.
+// This lets the dashboard batch multiple changes without triggering a
+// gateway restart after each one.
+let _pendingConfig: any | null = null;
+let _pendingChangeCount = 0;
+let _pendingDescriptions: string[] = [];
+
+/** Stage a config snapshot for later commit. Does NOT write to disk. */
+export function stageConfig(config: any, description?: string): void {
+    _pendingConfig = config;
+    _pendingChangeCount++;
+    if (description) _pendingDescriptions.push(description);
+}
+
+/** Commit the staged config to disk (triggers gateway restart). Returns false if nothing staged. */
+export function commitPendingConfig(): boolean {
+    if (_pendingConfig === null) return false;
+    writeConfig(_pendingConfig);
+    _pendingConfig = null;
+    _pendingChangeCount = 0;
+    _pendingDescriptions = [];
+    return true;
+}
+
+/** Discard all pending changes without writing. */
+export function discardPendingConfig(): void {
+    _pendingConfig = null;
+    _pendingChangeCount = 0;
+    _pendingDescriptions = [];
+}
+
+/** Get pending config state. Returns null if nothing is staged. */
+export function getPendingConfig(): { config: any; changeCount: number; descriptions: string[] } | null {
+    if (_pendingConfig === null) return null;
+    return { config: _pendingConfig, changeCount: _pendingChangeCount, descriptions: _pendingDescriptions };
+}
+
+/**
+ * Read the effective config — returns the pending staged config if one exists,
+ * otherwise reads from disk. This ensures subsequent edits build on top of
+ * previous staged changes rather than overwriting them.
+ */
+export function readEffectiveConfig(): any {
+    if (_pendingConfig !== null) return JSON.parse(JSON.stringify(_pendingConfig));
+    return readConfig();
 }
 
 // ─── Dashboard extension config (icons, UI prefs — NOT stored in openclaw.json) ───
