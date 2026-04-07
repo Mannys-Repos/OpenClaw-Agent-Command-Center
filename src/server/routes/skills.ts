@@ -11,6 +11,85 @@ import {
     execAsync,
 } from "../api-utils.js";
 
+// ─── Skills config — separate from openclaw.json to avoid gateway validation issues ───
+// Stored at ~/.openclaw/extensions/openclaw-agent-dashboard/skills-config.json
+import { DASHBOARD_CONFIG_DIR } from "../api-utils.js";
+const SKILLS_CONFIG_PATH = join(DASHBOARD_CONFIG_DIR, "skills-config.json");
+
+function readSkillsConfig(): any {
+    if (!existsSync(SKILLS_CONFIG_PATH)) return {};
+    try { return JSON.parse(readFileSync(SKILLS_CONFIG_PATH, "utf-8")); } catch { return {}; }
+}
+
+function writeSkillsConfig(cfg: any): void {
+    if (!existsSync(DASHBOARD_CONFIG_DIR)) mkdirSync(DASHBOARD_CONFIG_DIR, { recursive: true });
+    writeFileSync(SKILLS_CONFIG_PATH, JSON.stringify(cfg, null, 2), "utf-8");
+}
+
+// ─── Sync enabled skills to workspace SKILLS.md ───
+// The gateway reads all .md files from the workspace as part of the system prompt.
+// This writes a lightweight SKILLS.md index generated from enabled skills.
+// The agent uses its `read` tool to load a skill's full instructions on demand.
+export function syncSkillsToWorkspace(agentId: string, config?: any): void {
+    if (!config) config = readConfig();
+    const agentsList = config?.agents?.list || [];
+    let agent = agentsList.find((a: any) => a.id === agentId);
+    if (!agent && agentId === "main") agent = { id: "main" };
+    if (!agent) return;
+
+    const workspace = getAgentWorkspace(agent);
+    if (!existsSync(workspace)) mkdirSync(workspace, { recursive: true });
+
+    const wsSkillsDir = join(workspace, "skills");
+    const managedSkillsDir = join(OPENCLAW_DIR, "skills");
+    const skillsCfg = readSkillsConfig();
+    const agentEntries = skillsCfg[agentId] || {};
+
+    const seen = new Set<string>();
+    const lines: string[] = [];
+
+    for (const base of [wsSkillsDir, managedSkillsDir]) {
+        if (!existsSync(base)) continue;
+        try {
+            for (const entry of readdirSync(base)) {
+                if (seen.has(entry)) continue;
+                seen.add(entry);
+                const skillDir = join(base, entry);
+                try { if (!statSync(skillDir).isDirectory()) continue; } catch { continue; }
+                // Check per-agent toggle, default enabled
+                const agentEntry = agentEntries[entry];
+                if (agentEntry !== undefined && agentEntry.enabled === false) continue;
+                const skillMdPath = join(skillDir, "SKILL.md");
+                if (!existsSync(skillMdPath)) continue;
+                try {
+                    const content = readFileSync(skillMdPath, "utf-8");
+                    const parsed = parseSkillMd(content);
+                    const relPath = base === wsSkillsDir
+                        ? `skills/${entry}/SKILL.md`
+                        : join(managedSkillsDir, entry, "SKILL.md");
+                    const desc = parsed.description ? ` — ${parsed.description}` : "";
+                    lines.push(`- **${parsed.name || entry}**${desc}  \n  → \`${relPath}\``);
+                } catch { }
+            }
+        } catch { }
+    }
+
+    const skillsMdPath = join(workspace, "SKILLS.md");
+    if (lines.length === 0) {
+        try { if (existsSync(skillsMdPath)) rmSync(skillsMdPath); } catch { }
+        return;
+    }
+
+    const content = `# Active Skills
+
+Read the skill file before acting when a request matches a skill below.
+
+${lines.join("\n")}
+`;
+    writeFileSync(skillsMdPath, content, "utf-8");
+    writeFileSync(skillsMdPath, content, "utf-8");
+}
+
 // ─── SKILL.md frontmatter parser ───
 function parseSkillMd(content: string): { name: string; description: string; metadata: any; body: string } {
     const defaults = { name: "", description: "", metadata: {}, body: content };
@@ -117,12 +196,14 @@ export async function handleSkillRoutes(
             s.shadowedBy = null;
         }
 
-        // Merge enabled/disabled from config
-        const entries = config.skills?.entries || {};
+        // Merge enabled/disabled from skills config — per-agent
+        const skillsCfg = readSkillsConfig();
+        const agentEntries = skillsCfg[agentId] || {};
         const allSkills = [...wsSkills, ...managedSkills];
         for (const s of allSkills) {
-            const entry = entries[s.dirName];
-            s.enabled = entry?.enabled !== false; // default true
+            const entry = agentEntries[s.dirName];
+            // Per-agent entry if set, otherwise default enabled
+            s.enabled = entry !== undefined ? entry.enabled !== false : true;
         }
 
         json(res, 200, { skills: allSkills });
@@ -144,19 +225,62 @@ export async function handleSkillRoutes(
         if (!agent) return json(res, 404, { error: "Agent not found" }), true;
 
         const workspace = getAgentWorkspace(agent);
+        const targetDir = scope === "managed" ? join(OPENCLAW_DIR, "skills") : join(workspace, "skills");
+        if (!existsSync(targetDir)) mkdirSync(targetDir, { recursive: true });
+
         let cmd: string;
+        let installCwd: string | undefined;
         if (source === "clawhub") {
-            const targetDir = scope === "managed" ? join(OPENCLAW_DIR, "skills") : join(workspace, "skills");
-            if (!existsSync(targetDir)) mkdirSync(targetDir, { recursive: true });
             cmd = `clawhub install ${identifier.trim()} --workdir "${targetDir}"`;
         } else {
             // skills.sh or github direct
-            const globalFlag = scope === "managed" ? " --global" : "";
-            cmd = `npx skills add ${identifier.trim()} --agent openclaw${globalFlag} -y`;
+            // The skills CLI installs to <cwd>/<agent>/skills/ in project scope.
+            // "openclaw" is the recognized agent name in the skills CLI ecosystem.
+            // We use a temp working dir, then move results to the target.
+            const tmpBase = join(OPENCLAW_DIR, ".tmp-skill-install");
+            if (existsSync(tmpBase)) rmSync(tmpBase, { recursive: true, force: true });
+            mkdirSync(tmpBase, { recursive: true });
+            const id = identifier.trim();
+            cmd = `npx -y skills add ${id} --skill '*' --agent openclaw --copy -y`;
+            installCwd = tmpBase;
         }
 
         try {
-            await execAsync(cmd, { timeout: 60000 });
+            await execAsync(cmd, { timeout: 120000, cwd: installCwd });
+            // For skills.sh/github: find and move installed skills from temp dir to target
+            if (source !== "clawhub") {
+                const tmpBase = join(OPENCLAW_DIR, ".tmp-skill-install");
+                // Recursively find all SKILL.md files in the temp dir
+                const findSkills = (dir: string): string[] => {
+                    const results: string[] = [];
+                    try {
+                        for (const entry of readdirSync(dir)) {
+                            const full = join(dir, entry);
+                            try {
+                                if (statSync(full).isDirectory()) {
+                                    if (existsSync(join(full, "SKILL.md"))) {
+                                        results.push(full);
+                                    } else {
+                                        results.push(...findSkills(full));
+                                    }
+                                }
+                            } catch { }
+                        }
+                    } catch { }
+                    return results;
+                };
+                const skillDirs = findSkills(tmpBase);
+                for (const skillPath of skillDirs) {
+                    const skillName = basename(skillPath);
+                    if (!isSafeDirName(skillName)) continue;
+                    const dest = join(targetDir, skillName);
+                    if (existsSync(dest)) rmSync(dest, { recursive: true, force: true });
+                    await execAsync(`cp -r "${skillPath}" "${dest}"`, { timeout: 10000 });
+                }
+                // Clean up temp dir
+                if (existsSync(tmpBase)) rmSync(tmpBase, { recursive: true, force: true });
+            }
+            syncSkillsToWorkspace(agentId);
             json(res, 200, { ok: true });
         } catch (err: any) {
             json(res, 500, { error: err.message || "Install failed" });
@@ -223,8 +347,10 @@ export async function handleSkillRoutes(
 
         // New skill is enabled by default — ensure read_file is available
         await ensureReadFileAllowed(config, agentId);
-        writeConfig(config);
 
+        // Sync SKILLS.md before writing config (writeConfig triggers gateway restart)
+        syncSkillsToWorkspace(agentId, config);
+        writeConfig(config);
         json(res, 200, { ok: true });
         return true;
     }
@@ -249,6 +375,7 @@ export async function handleSkillRoutes(
         if (!existsSync(skillDir)) return json(res, 404, { error: "Skill not found" }), true;
 
         rmSync(skillDir, { recursive: true, force: true });
+        syncSkillsToWorkspace(agentId);
         json(res, 200, { ok: true });
         return true;
     }
@@ -261,19 +388,20 @@ export async function handleSkillRoutes(
         if (!isSafeDirName(dirName)) return json(res, 403, { error: "Invalid skill name" }), true;
 
         const body = await parseBody(req);
-        const config = readConfig();
-        if (!config.skills) config.skills = {};
-        if (!config.skills.entries) config.skills.entries = {};
-        if (!config.skills.entries[dirName]) config.skills.entries[dirName] = {};
-        config.skills.entries[dirName].enabled = !!body.enabled;
+        const skillsCfg = readSkillsConfig();
+        if (!skillsCfg[agentId]) skillsCfg[agentId] = {};
+        skillsCfg[agentId][dirName] = { enabled: !!body.enabled };
+        writeSkillsConfig(skillsCfg);
 
-        // When enabling a skill, ensure read_file is available for the agent
-        // (skills require the read tool to be loaded by the LLM)
+        // When enabling a skill, ensure read tool is available for the agent
+        const config = readConfig();
         if (body.enabled) {
             await ensureReadFileAllowed(config, agentId);
+            writeConfig(config);
         }
 
-        writeConfig(config);
+        // Sync SKILLS.md
+        syncSkillsToWorkspace(agentId, config);
         json(res, 200, { ok: true });
         return true;
     }

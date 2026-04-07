@@ -143,7 +143,7 @@ function api(p,o){
 function toast(m,t){t=t||"info";var e=document.createElement("div");e.className="toast toast-"+t;e.textContent=m;document.getElementById("toasts").appendChild(e);setTimeout(function(){e.remove()},3500)}
 function esc(s){if(s==null)return"";var d=document.createElement("div");d.textContent=String(s);return d.innerHTML}
 function openModal(t,h){document.getElementById("modal-title").textContent=t;document.getElementById("modal-body").innerHTML=h;document.getElementById("modal-bg").classList.add("open")}
-function closeModal(){document.getElementById("modal-bg").classList.remove("open");var modalEl=document.querySelector("#modal-bg .modal");if(modalEl)modalEl.style.maxWidth="";_chatSessionKey=null;if(_chatPollTimer){clearTimeout(_chatPollTimer);_chatPollTimer=null}if(_rapidPollTimer){clearInterval(_rapidPollTimer);_rapidPollTimer=null}}
+function closeModal(){document.getElementById("modal-bg").classList.remove("open");var modalEl=document.querySelector("#modal-bg .modal");if(modalEl)modalEl.style.maxWidth="";_chatSessionKey=null;_cancelAllPollTimers()}
 function openPagePanel(title,h){
   var pp=document.getElementById("page-panel");
   var pb=document.getElementById("page-panel-body");
@@ -538,29 +538,6 @@ function _enableNav(){
   btns.forEach(function(b){b.removeAttribute("disabled");b.classList.remove("nav-disabled")});
   var items=document.querySelectorAll(".agent-list-item");
   items.forEach(function(i){i.classList.remove("nav-disabled")});
-}
-
-// Silently wait for gateway to come back after a config-triggered restart, then reload data
-var _reconnecting=false;
-function _reconnectAfterRestart(){
-  if(_reconnecting)return;
-  _reconnecting=true;
-  var attempts=0;
-  var maxAttempts=20;
-  function poll(){
-    attempts++;
-    if(attempts>maxAttempts){_reconnecting=false;return;}
-    fetch("/api/overview?fast=1").then(function(r){
-      if(r.ok)return r.json();
-      throw new Error("not ready");
-    }).then(function(){
-      _reconnecting=false;
-      load({fast:true,_quiet:true});
-    }).catch(function(){
-      setTimeout(poll,1500);
-    });
-  }
-  setTimeout(poll,2000);
 }
 
 // Config error banner removed — was disruptive and unhelpful
@@ -1748,7 +1725,7 @@ function renderSkillsSection(a){
   var ws=skills.filter(function(s){return s.tier==="workspace"});
   var global=skills.filter(function(s){return s.tier==="managed"||s.tier==="bundled"});
   var h='<div class="skills-header">';
-  h+='<span class="skills-note">Enabling a skill auto-allows <code>read</code></span>';
+  h+='<span class="skills-note">Enabling a skill adds it to the agent\'s <code>SKILLS.md</code> file and auto-allows the <code>read</code> tool. Make sure the <code>read</code> tool is enabled in the agent\'s tool bindings for skills to work.</span>';
   h+='<div class="skills-header-actions">';
   h+='<button class="btn btn-sm" onclick="openInstallSkillForm(\''+esc(a.id)+'\')">Install</button>';
   h+='<button class="btn btn-sm btn-accent" onclick="openNewSkillForm(\''+esc(a.id)+'\')">+ New Skill</button>';
@@ -1835,10 +1812,11 @@ function submitEditSkill(agentId,dirName,scope){
   api("skills/"+encodeURIComponent(agentId)+"/"+encodeURIComponent(dirName),{method:"PUT",body:JSON.stringify({scope:scope,content:content})}).then(function(){
     closeModal();toast("Skill saved","ok");
     delete _skillsCache[agentId];
-    if(drawerAgent&&drawerAgent.id===agentId&&drawerTab==="tools"){
-      var db=Q("drawer-body");if(db)db.innerHTML=renderTools(drawerAgent);
-    }
-  }).catch(function(e){toast(e.message,"err")});
+    _showRestartBanner();
+  }).catch(function(e){
+    if(e.message==="Failed to fetch"){closeModal();toast("Skill saved","ok");delete _skillsCache[agentId];_showRestartBanner()}
+    else toast(e.message,"err");
+  });
 }
 
 function openNewSkillForm(agentId){
@@ -1860,10 +1838,11 @@ function submitNewSkill(agentId){
   api("skills/"+encodeURIComponent(agentId)+"/"+encodeURIComponent(dirName),{method:"PUT",body:JSON.stringify({scope:scope,name:name,description:desc,body:body})}).then(function(){
     closeModal();toast("Skill created","ok");
     delete _skillsCache[agentId];
-    if(drawerAgent&&drawerAgent.id===agentId&&drawerTab==="tools"){
-      var db=Q("drawer-body");if(db)db.innerHTML=renderTools(drawerAgent);
-    }
-  }).catch(function(e){toast(e.message,"err")});
+    _showRestartBanner();
+  }).catch(function(e){
+    if(e.message==="Failed to fetch"){closeModal();toast("Skill created","ok");delete _skillsCache[agentId];_showRestartBanner()}
+    else toast(e.message,"err");
+  });
 }
 
 function deleteSkill(agentId,dirName,tier){
@@ -1875,18 +1854,30 @@ function deleteSkill(agentId,dirName,tier){
   api("skills/"+encodeURIComponent(agentId)+"/"+encodeURIComponent(dirName)+"?scope="+scope,{method:"DELETE"}).then(function(){
     toast("Skill deleted","ok");
     delete _skillsCache[agentId];
-    if(drawerAgent&&drawerAgent.id===agentId&&drawerTab==="tools"){
-      var db=Q("drawer-body");if(db)db.innerHTML=renderTools(drawerAgent);
-    }
-  }).catch(function(e){toast(e.message,"err")});
+    _showRestartBanner();
+  }).catch(function(e){
+    if(e.message==="Failed to fetch"){toast("Skill deleted","ok");delete _skillsCache[agentId];_showRestartBanner()}
+    else toast(e.message,"err");
+  });
 }
 
 function toggleSkill(agentId,dirName,enabled){
   api("skills/"+encodeURIComponent(agentId)+"/"+encodeURIComponent(dirName),{method:"PATCH",body:JSON.stringify({enabled:enabled})}).then(function(){
-    // Update local cache
     var skills=_skillsCache[agentId];
     if(skills){for(var i=0;i<skills.length;i++){if(skills[i].dirName===dirName)skills[i].enabled=enabled}}
-  }).catch(function(e){toast(e.message,"err")});
+    toast("Skill "+(enabled?"enabled":"disabled"),"ok");
+    // Enabling writes to openclaw.json (adds read tool) → gateway restart
+    if(enabled){_showRestartBanner()}
+  }).catch(function(e){
+    if(e.message==="Failed to fetch"){
+      var skills=_skillsCache[agentId];
+      if(skills){for(var i=0;i<skills.length;i++){if(skills[i].dirName===dirName)skills[i].enabled=enabled}}
+      toast("Skill "+(enabled?"enabled":"disabled"),"ok");
+      if(enabled){_showRestartBanner()}
+    } else {
+      toast(e.message,"err");
+    }
+  });
 }
 
 function openInstallSkillForm(agentId){
@@ -1913,10 +1904,11 @@ function submitInstallSkill(agentId){
   api("skills/"+encodeURIComponent(agentId)+"/install",{method:"POST",body:JSON.stringify({source:source,identifier:identifier,scope:scope})}).then(function(){
     toast("Skill installed","ok");
     delete _skillsCache[agentId];
-    if(drawerAgent&&drawerAgent.id===agentId&&drawerTab==="tools"){
-      var db=Q("drawer-body");if(db)db.innerHTML=renderTools(drawerAgent);
-    }
-  }).catch(function(e){toast("Install failed: "+e.message,"err")});
+    _showRestartBanner();
+  }).catch(function(e){
+    if(e.message==="Failed to fetch"){toast("Skill installed","ok");delete _skillsCache[agentId];_showRestartBanner()}
+    else toast("Install failed: "+e.message,"err");
+  });
 }
 
 function renderTools(a){
@@ -2384,7 +2376,7 @@ function renderSessions(a){
     var pk=primarySession.sessionKey||primarySession.id||"";
     var pMsgs=primarySession.messageCount||0;
     var pAgo=primarySession.updatedAt?fmtDate(primarySession.updatedAt):"";
-    h+='<div class="session-row" style="cursor:pointer;border-left:3px solid var(--accent);flex-wrap:wrap" onclick="openSessionChat(\''+esc(pk)+'\')">';
+    h+='<div class="session-row" style="cursor:pointer;border-left:3px solid var(--accent);flex-wrap:wrap" onclick="openSessionChat(\''+esc(pk)+'\',\''+esc(agentId)+'\')">';
     h+='<div class="session-row-left" style="min-width:0">';
     h+='<div style="font-size:var(--fs-base);font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">💬 '+esc(agentId)+' — Main Thread</div>';
     h+='<div style="font-size:var(--fs-sm);color:var(--tx3);margin-top:3px;display:flex;gap:8px;align-items:center;flex-wrap:wrap">';
@@ -2392,7 +2384,7 @@ function renderSessions(a){
     if(pAgo)h+='<span>'+pAgo+'</span>';
     h+='</div></div>';
     h+='<div class="session-row-actions" style="display:flex;gap:6px;align-items:center;flex-shrink:0">';
-    h+='<button class="btn btn-sm btn-accent" onclick="event.stopPropagation();openSessionChat(\''+esc(pk)+'\')">Open Chat</button>';
+    h+='<button class="btn btn-sm btn-accent" onclick="event.stopPropagation();openSessionChat(\''+esc(pk)+'\',\''+esc(agentId)+'\')">Open Chat</button>';
     h+='<button class="btn btn-sm btn-danger" onclick="event.stopPropagation();clearMainSession(\''+esc(a.id)+'\')">Reset</button>';
     h+='</div></div>';
   }else{
@@ -2470,7 +2462,7 @@ function showAllSessions(){
   openModal("All Sessions ("+all.length+")",h);
 }
 function startMainChat(agentId){
-  _chatSessionKey="__pending_"+agentId;
+  _chatSessionKey=agentId;
   _chatLastMsgCount=0;
   _openChatFullscreen(agentId,[],false,false);
   var el=Q("chat-msgs");
@@ -2481,7 +2473,10 @@ function startMainChat(agentId){
 }
 var _sessionResetting=false;
 function clearMainSession(agentId){
+  // Guard: prevent concurrent resets
+  if(_sessionResetting)return;
   if(!confirm("Reset the main session for "+agentId+"? This fully clears the session so the agent picks up new tools/plugins."))return;
+  // Find primary session key from session list (:main gateway key pattern)
   var sessions=(D._agentSessions&&D._agentSessions[agentId])||[];
   var primary=null;
   sessions.forEach(function(s){
@@ -2492,55 +2487,31 @@ function clearMainSession(agentId){
   var pk=primary.sessionKey||primary.id;
   // Show resetting state in the drawer
   _sessionResetting=true;
-  if(D._agentSessions)delete D._agentSessions[agentId];
-  D._agentSessions=D._agentSessions||{};
-  D._agentSessions[agentId]=[];
+  if(D._agentSessions)D._agentSessions[agentId]=[];
   if(drawerAgent){var db=Q("drawer-body");if(db)db.innerHTML=renderSessions(drawerAgent)}
+  // Single DELETE call — no seed message, no truncate
   api("sessions/"+encodeURIComponent(pk),{method:"DELETE",_quiet:true}).then(function(){
-    // Send a seed message to create the new primary session
-    api("sessions/"+encodeURIComponent(agentId+"-reset")+"/message",{method:"POST",body:JSON.stringify({message:"Session reset. Ready.",agentId:agentId}),_quiet:true}).then(function(d){
-      var newPk=d.primarySessionKey||agentId+"-reset";
-      // Truncate the seed messages from the new session so it starts clean
-      api("sessions/"+encodeURIComponent(newPk)+"/clear",{method:"POST",_quiet:true}).then(function(){
-        _sessionResetting=false;
-        toast("Session reset complete","ok");
-        // Refresh and show the drawer — don't open chat
-        api("sessions/agent/"+encodeURIComponent(agentId)+"?scan=1",{_quiet:true}).then(function(sd){
-          var newSessions=sd.sessions||[];
-          if(!D._agentSessions)D._agentSessions={};
-          D._agentSessions[agentId]=newSessions;
-          _mergeAgentSessionsIntoGlobal(agentId,newSessions);
-          if(drawerAgent){var db=Q("drawer-body");if(db)db.innerHTML=renderSessions(drawerAgent)}
-        }).catch(function(){
-          if(drawerAgent){var db=Q("drawer-body");if(db)db.innerHTML=renderSessions(drawerAgent)}
-        });
-      }).catch(function(){
-        // Clear failed but session exists — still usable
-        _sessionResetting=false;
-        toast("Session reset complete","ok");
-        api("sessions/agent/"+encodeURIComponent(agentId)+"?scan=1",{_quiet:true}).then(function(sd){
-          var newSessions=sd.sessions||[];
-          if(!D._agentSessions)D._agentSessions={};
-          D._agentSessions[agentId]=newSessions;
-          _mergeAgentSessionsIntoGlobal(agentId,newSessions);
-          if(drawerAgent){var db=Q("drawer-body");if(db)db.innerHTML=renderSessions(drawerAgent)}
-        }).catch(function(){
-          if(drawerAgent){var db=Q("drawer-body");if(db)db.innerHTML=renderSessions(drawerAgent)}
-        });
-      });
-    }).catch(function(e){
-      _sessionResetting=false;
-      toast("Reset done but seed failed: "+e.message,"err");
-      api("sessions/agent/"+encodeURIComponent(agentId)+"?scan=1",{_quiet:true}).then(function(sd){
-        var newSessions=sd.sessions||[];
-        if(!D._agentSessions)D._agentSessions={};
-        D._agentSessions[agentId]=newSessions;
-        if(drawerAgent){var db=Q("drawer-body");if(db)db.innerHTML=renderSessions(drawerAgent)}
-      }).catch(function(){
-        if(drawerAgent){var db=Q("drawer-body");if(db)db.innerHTML=renderSessions(drawerAgent)}
-      });
+    _sessionResetting=false;
+    toast("Session reset complete","ok");
+    // Close chat view if open for the deleted session
+    if(_chatSessionKey===pk)closeChatView();
+    // Refresh session index via GET /sessions/agent/{agentId}?scan=1
+    api("sessions/agent/"+encodeURIComponent(agentId)+"?scan=1",{_quiet:true}).then(function(sd){
+      var newSessions=sd.sessions||[];
+      if(!D._agentSessions)D._agentSessions={};
+      D._agentSessions[agentId]=newSessions;
+      _mergeAgentSessionsIntoGlobal(agentId,newSessions);
+      // Update drawer to show "no session" / "Start Chat" state
+      if(drawerAgent){var db=Q("drawer-body");if(db)db.innerHTML=renderSessions(drawerAgent)}
+    }).catch(function(){
+      if(drawerAgent){var db=Q("drawer-body");if(db)db.innerHTML=renderSessions(drawerAgent)}
     });
-  }).catch(function(e){_sessionResetting=false;toast(e.message,"err");if(drawerAgent){var db=Q("drawer-body");if(db)db.innerHTML=renderSessions(drawerAgent)}});
+  }).catch(function(e){
+    _sessionResetting=false;
+    toast(e.message,"err");
+    // Restore drawer on error
+    if(drawerAgent){var db=Q("drawer-body");if(db)db.innerHTML=renderSessions(drawerAgent)}
+  });
 }
 function startNewSession(agentId){
   // The CLI only supports one session per agent — open the primary session chat
@@ -2643,15 +2614,50 @@ function endAllSessions(agentId){
 var _chatSessionKey=null;
 var _chatPollTimer=null;
 var _rapidPollTimer=null;
-function openSessionChat(key){
-  _chatSessionKey=key;
+
+// ── Unified Polling Timer Management ──
+// Single mechanism: rapid phase (500ms × 20) then background phase (15s).
+// Cancels any existing timers before starting, preventing conflicting intervals.
+function _cancelAllPollTimers(){
+  if(_rapidPollTimer){clearInterval(_rapidPollTimer);_rapidPollTimer=null}
+  if(_chatPollTimer){clearInterval(_chatPollTimer);_chatPollTimer=null}
+}
+function _startRapidPoll(key){
+  _cancelAllPollTimers();
+  var count=0;
+  _rapidPollTimer=setInterval(function(){
+    // Self-terminate if session key changed (stale poll)
+    if(_chatSessionKey!==key){_cancelAllPollTimers();return}
+    count++;
+    _refreshChatMessages(key);
+    if(count>=20){
+      // Rapid phase done — transition to background polling
+      clearInterval(_rapidPollTimer);
+      _rapidPollTimer=null;
+      _startBackgroundPoll(key);
+    }
+  },500);
+}
+function _startBackgroundPoll(key){
+  if(_chatPollTimer){clearInterval(_chatPollTimer);_chatPollTimer=null}
+  _chatPollTimer=setInterval(function(){
+    // Self-terminate if session key changed or chat closed
+    if(_chatSessionKey!==key){_cancelAllPollTimers();return}
+    _refreshChatMessages(key);
+  },15000);
+}
+
+function openSessionChat(sessionKey,agentId){
+  _chatSessionKey=sessionKey;
   _chatLastMsgCount=0;
+  // Cancel any existing poll timers from a previous chat
+  _cancelAllPollTimers();
   // Detect if this is a subagent/read-only session
   var isReadOnly=false;
   if(D._agentSessions){
     Object.keys(D._agentSessions).forEach(function(aid){
       (D._agentSessions[aid]||[]).forEach(function(s){
-        if((s.sessionKey||s.id)===key){
+        if((s.sessionKey||s.id)===sessionKey){
           var gk=s.gatewayKey||"";
           if(gk.match(/:subagent:/)){
             isReadOnly=true;
@@ -2660,18 +2666,21 @@ function openSessionChat(key){
       });
     });
   }
-  // Always use fullscreen view
-  _openChatFullscreen(key,[],true,isReadOnly);
-  // Fetch messages
-  api("sessions/"+encodeURIComponent(key)).then(function(d){
-    if(_chatSessionKey!==key)return; // stale response, user switched sessions
+  // Open fullscreen chat view
+  _openChatFullscreen(sessionKey,[],true,isReadOnly);
+  // Fetch messages from backend and render
+  api("sessions/"+encodeURIComponent(sessionKey)).then(function(d){
+    if(_chatSessionKey!==sessionKey)return; // stale response, user switched sessions
     var sess=d.session||{};
     var msgs=(sess.messages||sess.conversation||[]);
+    _chatLastMsgCount=msgs.length;
     _renderChatMessages(msgs,false);
   }).catch(function(e){
-    if(_chatSessionKey!==key)return;
+    if(_chatSessionKey!==sessionKey)return;
     toast("Could not load session: "+e.message,"err");
   });
+  // Start background polling (15s interval)
+  _startBackgroundPoll(sessionKey);
 }
 
 var _chatHideInternal=true;
@@ -2694,8 +2703,8 @@ function _openChatFullscreen(key,msgs,loading,readOnly){
   var inputBar='';
   if(!readOnly){
     inputBar='<div class="chat-input-bar">'
-      +'<input id="chat-in" class="chat-input-field" placeholder="Type a message…" onkeydown="if(event.key===\'Enter\'&&!event.shiftKey){event.preventDefault();sendMsg(\''+esc(key)+'\')}" />'
-      +'<button class="btn btn-accent btn-sm chat-send-btn" onclick="sendMsg(\''+esc(key)+'\')">Send</button>'
+      +'<input id="chat-in" class="chat-input-field" placeholder="Type a message…" onkeydown="if(event.key===\'Enter\'&&!event.shiftKey){event.preventDefault();sendMsg(_chatSessionKey)}" />'
+      +'<button class="btn btn-accent btn-sm chat-send-btn" onclick="sendMsg(_chatSessionKey)">Send</button>'
       +'</div>';
   }else{
     inputBar='<div style="padding:10px 16px;text-align:center;color:var(--tx3);font-size:var(--fs-sm);background:var(--bg2);border-top:1px solid var(--border)">Read-only — this is a subagent session log</div>';
@@ -2719,8 +2728,8 @@ function _openChatModal(key,msgs,loading){
   if(loading)h+='<div class="loading-center"><span class="spin"></span> Loading…</div>';
   h+='</div>';
   h+='<div class="chat-input-bar">';
-  h+='<input id="chat-in" class="chat-input-field" placeholder="Type a message…" onkeydown="if(event.key===\'Enter\'&&!event.shiftKey){event.preventDefault();sendMsg(\''+esc(key)+'\')}" />';
-  h+='<button class="btn btn-accent btn-sm chat-send-btn" onclick="sendMsg(\''+esc(key)+'\')">Send</button>';
+  h+='<input id="chat-in" class="chat-input-field" placeholder="Type a message…" onkeydown="if(event.key===\'Enter\'&&!event.shiftKey){event.preventDefault();sendMsg(_chatSessionKey)}" />';
+  h+='<button class="btn btn-accent btn-sm chat-send-btn" onclick="sendMsg(_chatSessionKey)">Send</button>';
   h+='</div></div>';
   openModal("💬 "+shortKey,h);
   var inp=Q("chat-in");if(inp)setTimeout(function(){inp.focus()},100);
@@ -2738,11 +2747,12 @@ function _renderChatMessages(msgs,keepPending){
       var role=m.role||"system";
       var content=m.content||m.text||"";
       var isInternal=false;
-      // toolResult is internal
+      // tool/toolResult roles are internal
       if(role==="toolResult"||role==="tool"){
         if(_chatHideInternal)return;
         isInternal=true;
       }
+      // Handle array content (ContentPart[])
       if(Array.isArray(content)){
         var textParts=[];
         var thinkingParts=[];
@@ -2752,7 +2762,7 @@ function _renderChatMessages(msgs,keepPending){
           else if(c.text){textParts.push(c.text)}
         });
         var textContent=textParts.join("\n");
-        if(textContent.indexOf("OPENCLAW_INTERNAL_CONTEXT")>-1||textContent.indexOf("<<<BEGIN_OPENCLAW")>-1){
+        if(textContent.indexOf("OPENCLAW_INTERNAL_CONTEXT")>-1||textContent.indexOf("<<<BEGIN_OPENCLAW")>-1||textContent.indexOf("<relevant-memories>")>-1){
           isInternal=true;
         }
         if(_chatHideInternal){
@@ -2765,17 +2775,26 @@ function _renderChatMessages(msgs,keepPending){
           content=parts.join("\n\n");
         }
       }else{
-        if(_chatHideInternal&&(content.indexOf("OPENCLAW_INTERNAL_CONTEXT")>-1||content.indexOf("<<<BEGIN_OPENCLAW")>-1))return;
+        // String content — filter internal markers
+        if(content.indexOf("OPENCLAW_INTERNAL_CONTEXT")>-1||content.indexOf("<<<BEGIN_OPENCLAW")>-1||content.indexOf("<relevant-memories>")>-1){
+          if(_chatHideInternal)return;
+          isInternal=true;
+        }
       }
+      // Always filter empty, whitespace-only, and NO_REPLY messages
       if(!content||!content.trim())return;
       if(content.trim()==="NO_REPLY")return;
-      // Strip OpenClaw reply routing tags and injected timestamps
-      content=content.replace(/\[\[\s*reply_to_current\s*\]\]\s*/g,"").replace(/\[\[\s*reply_to:\s*[^\]]*\]\]\s*/g,"");
-      if(role==="user")content=content.replace(/^\[.*?\]\s*/,"");
+      // Strip routing tags
+      content=content.replace(/\[\[reply_to_current\]\]/g,"").replace(/\[\[reply_to:[^\]]*\]\]/g,"");
+      // Strip injected timestamp prefixes (e.g. [2024-01-01T00:00:00Z] or [Tue 2026-04-07 09:34 EDT])
+      content=content.replace(/^\[[A-Za-z]{3} \d{4}-\d{2}-\d{2} \d{2}:\d{2}[^\]]*\]\s*/,"");
+      content=content.replace(/^\[\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}:\d{2}[^\]]*\]\s*/,"");
       content=content.trim();
       if(!content)return;
+      // Role label mapping: user→you, assistant→agent, tool/toolResult→tool
+      var label=role==="user"?"you":(role==="assistant"?"agent":(role==="tool"||role==="toolResult"?"tool":role));
       h+='<div class="chat-msg '+esc(role)+(isInternal?" chat-internal":"")+'">';
-      h+='<div class="chat-role-label">'+esc(role==="user"?"you":(role==="toolResult"?"tool":role))+'</div>';
+      h+='<div class="chat-role-label">'+esc(label)+'</div>';
       h+='<div class="chat-bubble">'+esc(content)+'</div></div>';
     });
   }
@@ -2788,21 +2807,48 @@ function _renderChatMessages(msgs,keepPending){
 
 function closeChatView(){
   _chatSessionKey=null;
-  if(_chatPollTimer){clearTimeout(_chatPollTimer);_chatPollTimer=null}
-  if(_rapidPollTimer){clearInterval(_rapidPollTimer);_rapidPollTimer=null}
+  _cancelAllPollTimers();
   var fs=Q("chat-fullscreen");
-  if(fs){fs.remove();return}
-  closeModal();
+  if(fs){fs.remove()}else{closeModal()}
+  // Refresh drawer session list after closing chat
+  if(drawerAgent)refreshSessions(drawerAgent.id);
+}
+
+// Synchronize all frontend state to a new session key after a redirect.
+// Updates _chatSessionKey, cancels old poll timers, resets count,
+// fetches full message history, and refreshes the drawer session list.
+function _syncChatToSession(newKey){
+  _chatSessionKey=newKey;
+  _cancelAllPollTimers();
+  // Update the chat header text
+  var heading=document.querySelector("#chat-fullscreen h3, .chat-header h3");
+  if(heading){
+    var shortKey=newKey.length>30?newKey.slice(0,28)+"…":newKey;
+    heading.textContent="\uD83D\uDCAC "+shortKey;
+  }
+  _chatLastMsgCount=0;
+  // Fetch full message history from the new session
+  api("sessions/"+encodeURIComponent(newKey),{_quiet:true}).then(function(sd){
+    if(_chatSessionKey!==newKey)return;
+    var sess=sd.session||{};
+    var msgs=(sess.messages||sess.conversation||[]);
+    _chatLastMsgCount=msgs.length;
+    _renderChatMessages(msgs,false);
+  }).catch(function(){});
+  // Refresh the drawer session list
+  if(drawerAgent)refreshSessions(drawerAgent.id);
 }
 
 function sendMsg(key){
   var inp=Q("chat-in");if(!inp)return;
   var msg=inp.value.trim();if(!msg)return;
 
-  // Handle pending session (no primary exists yet) — extract agentId
+  // Derive agentId from drawerAgent or from the key itself
   var agentId=drawerAgent?drawerAgent.id:"";
-  if(key.indexOf("__pending_")===0){
-    agentId=key.replace("__pending_","");
+
+  // For new chats (_chatSessionKey equals the agentId), send to {agentId}-init
+  // so the backend/gateway resolves the real session key
+  if(_chatSessionKey&&_chatSessionKey===agentId){
     key=agentId+"-init";
   }
 
@@ -2824,13 +2870,13 @@ function sendMsg(key){
   var placeholder=el.querySelector("div[style*='text-align:center']");
   if(placeholder&&!el.querySelector(".chat-msg"))placeholder.remove();
 
-  // Append user message
+  // Append user message bubble
   var userDiv=document.createElement("div");
   userDiv.className="chat-msg user";
   userDiv.innerHTML='<div class="chat-role-label">you</div><div class="chat-bubble">'+esc(msg)+'</div>';
   el.appendChild(userDiv);
 
-  // Append pending agent message
+  // Append "Thinking…" indicator
   var pendDiv=document.createElement("div");
   pendDiv.className="chat-msg assistant";
   pendDiv.id="chat-pending";
@@ -2840,6 +2886,7 @@ function sendMsg(key){
 
   api("sessions/"+encodeURIComponent(key)+"/message",{method:"POST",body:JSON.stringify({message:msg,agentId:agentId})})
     .then(function(d){
+      // Replace "Thinking…" with the actual response
       var p=Q("chat-pending");
       if(p){
         var txt=(d&&d.result)?d.result:(d&&d.response)?d.response:"Message sent.";
@@ -2849,41 +2896,21 @@ function sendMsg(key){
       inp.disabled=false;
       inp.focus();
       el.scrollTop=el.scrollHeight;
+      _chatLastMsgCount=Math.max(_chatLastMsgCount,2);
 
-      // If the gateway routed the message to a DIFFERENT session, switch to it
+      // Determine the key to poll against (may be redirected)
       var refreshKey=key;
       if(d&&d.primarySessionKey&&d.primarySessionKey!==key){
         refreshKey=d.primarySessionKey;
-        _chatSessionKey=refreshKey;
-        // Update the chat header
-        var heading=document.querySelector("#chat-fullscreen h3, .chat-header h3");
-        if(heading){
-          var shortKey=refreshKey.length>30?refreshKey.slice(0,28)+"…":refreshKey;
-          heading.textContent="\uD83D\uDCAC "+shortKey;
-        }
-        // Immediately load the full conversation from the primary session
-        _chatLastMsgCount=0;
-        api("sessions/"+encodeURIComponent(refreshKey),{_quiet:true}).then(function(sd){
-          if(_chatSessionKey!==refreshKey)return;
-          var sess=sd.session||{};
-          var msgs=(sess.messages||sess.conversation||[]);
-          _chatLastMsgCount=msgs.length;
-          _renderChatMessages(msgs,false);
-        }).catch(function(){});
-        // Also refresh the drawer session list
+        // Delegate full state synchronization to _syncChatToSession
+        _syncChatToSession(refreshKey);
+      }else{
+        // No redirect — refresh drawer session list to update message counts
         if(drawerAgent)refreshSessions(drawerAgent.id);
       }
 
-      // Reset message count so rapid poll picks up new messages
-      _chatLastMsgCount=0;
-      // Start rapid polling: 500ms intervals for 10 seconds (20 iterations max)
-      if(_rapidPollTimer){clearInterval(_rapidPollTimer);_rapidPollTimer=null}
-      var _rapidPollCount=0;
-      _rapidPollTimer=setInterval(function(){
-        _rapidPollCount++;
-        _refreshChatMessages(refreshKey);
-        if(_rapidPollCount>=20){clearInterval(_rapidPollTimer);_rapidPollTimer=null}
-      },500);
+      // Start unified rapid polling (500ms × 20, then 15s background)
+      _startRapidPoll(refreshKey);
     })
     .catch(function(e){
       var p=Q("chat-pending");
@@ -2893,11 +2920,13 @@ function sendMsg(key){
         p.removeAttribute("id");
         var bubble=p.querySelector(".chat-bubble");
         if(isRateLimit){
+          // Styled rate-limit error bubble + model-limit banner
           bubble.innerHTML='<div class="chat-error-title">⚠ Model Limit Reached</div>'
             +'<div class="chat-error-msg">'+esc(errMsg)+'</div>'
             +'<div class="chat-error-hint">The model provider has rate-limited this account. Try again later or switch to a different model.</div>';
           _showModelLimitBanner(errMsg);
         }else{
+          // Generic error bubble
           bubble.textContent="Error: "+errMsg;
           bubble.classList.add("chat-bubble-err");
         }
@@ -2907,20 +2936,21 @@ function sendMsg(key){
     });
 }
 
-function _refreshChatMessages(key){
-  // Don't re-render while a message send is in-flight (pending bubble visible)
+async function _refreshChatMessages(key){
+  // Skip if a message send is in-flight (Thinking… indicator visible)
   if(Q("chat-pending"))return;
-  api("sessions/"+encodeURIComponent(key),{_quiet:true}).then(function(d){
-    if(_chatSessionKey!==key)return; // stale, user switched sessions
-    if(Q("chat-pending"))return; // send completed while fetch was in-flight
+  try{
+    var d=await api("sessions/"+encodeURIComponent(key),{_quiet:true});
+    // Stale poll self-terminates: session key changed while fetch was in-flight
+    if(_chatSessionKey!==key){_cancelAllPollTimers();return}
     var sess=d.session||{};
     var msgs=(sess.messages||sess.conversation||[]);
-    // Skip re-render if message count unchanged (fast path)
     var newCount=msgs.length;
-    if(_chatLastMsgCount===newCount&&newCount>0)return;
+    // Monotonic guard: never overwrite visible messages with fewer messages
+    if(newCount<=_chatLastMsgCount&&_chatLastMsgCount>0)return;
     _chatLastMsgCount=newCount;
     _renderChatMessages(msgs,false);
-  }).catch(function(){});
+  }catch(e){/* polling errors are silent */}
 }
 
 // ── Relationships Tab (Subagents + A2A Peers) ──
@@ -2996,26 +3026,7 @@ function renderSubagents(a){
     }
   }
 
-  // ── A2A Heartbeat warnings for peer agents ──
-  if(isPeer){
-    var hasHeartbeat=!!(a.heartbeat&&a.heartbeat.every);
-    var mdFiles=a.mdFiles||{};
-    var hbMeta=mdFiles["HEARTBEAT.md"];
-    var hasHeartbeatMd=hbMeta!=null&&(typeof hbMeta==="object"?hbMeta.size>0:hbMeta.length>0);
-    var warnings=[];
-    if(!hasHeartbeat)warnings.push("no heartbeat interval configured");
-    if(!hasHeartbeatMd)warnings.push("HEARTBEAT.md is missing or empty");
-    if(warnings.length>0){
-      h+='<div style="padding:12px 16px;background:#2d2215;border:1px solid #ffaa00;border-radius:var(--radius);margin-bottom:14px">';
-      h+='<div style="font-size:var(--fs-sm);font-weight:600;color:#ffaa00;margin-bottom:6px">⚠ A2A requires heartbeat</div>';
-      h+='<div style="font-size:var(--fs-sm);color:#e0c080;line-height:1.5;margin-bottom:8px">';
-      h+='This agent is an A2A peer but '+warnings.join(" and ")+'. ';
-      h+='Without a heartbeat, the agent session will terminate and A2A communication will stop working. ';
-      h+='HEARTBEAT.md should instruct the agent to act as a background daemon (e.g. "You are a background daemon. Check for new tasks from the orchestrator.").</div>';
-      h+='<button class="btn btn-sm" style="background:#ffaa00;color:#1a1a2e;border:none;font-weight:600" onclick="fixA2AHeartbeat(\''+esc(a.id)+'\')">Fix Heartbeat Config</button>';
-      h+='</div>';
-    }
-  }
+  // ── A2A peer info for peer agents ──
   if(peers.length===0){
     h+='<div class="ch-int-empty mb-md">No A2A peers configured.</div>';
   }else{
@@ -3079,7 +3090,7 @@ function addSubagent(id){
   if(subs.indexOf(sel.value)===-1)subs.push(sel.value);
   var patch={subagents:{allowAgents:subs}};
   api("agents/"+encodeURIComponent(id),{method:"PUT",body:JSON.stringify(patch)})
-    .then(function(){toast("Subagent added","ok");_updateAgentLocal(id,patch)}).catch(function(e){_updateAgentLocal(id,patch);toast("Subagent added","ok");_reconnectAfterRestart()});
+    .then(function(){toast("Subagent added","ok");_updateAgentLocal(id,patch);_showRestartBanner()}).catch(function(e){_updateAgentLocal(id,patch);toast("Subagent added","ok");_showRestartBanner()});
 }
 function removeSubagent(id,subId){
   var a=null;for(var i=0;i<D.agents.length;i++){if(D.agents[i].id===id){a=D.agents[i];break}}
@@ -3087,13 +3098,13 @@ function removeSubagent(id,subId){
   var subs=getSubs(a).filter(function(s){return s!==subId});
   var patch={subagents:{allowAgents:subs}};
   api("agents/"+encodeURIComponent(id),{method:"PUT",body:JSON.stringify(patch)})
-    .then(function(){toast("Subagent removed","ok");_updateAgentLocal(id,patch)}).catch(function(e){_updateAgentLocal(id,patch);toast("Subagent removed","ok");_reconnectAfterRestart()});
+    .then(function(){toast("Subagent removed","ok");_updateAgentLocal(id,patch);_showRestartBanner()}).catch(function(e){_updateAgentLocal(id,patch);toast("Subagent removed","ok");_showRestartBanner()});
 }
 function saveSubagents(id){
   var allowed=V("sub-allow-"+id).split(",").map(function(s){return s.trim()}).filter(Boolean);
   var patch={subagents:{allowAgents:allowed}};
   api("agents/"+encodeURIComponent(id),{method:"PUT",body:JSON.stringify(patch)})
-    .then(function(){toast("Saved","ok");_updateAgentLocal(id,patch)}).catch(function(e){_updateAgentLocal(id,patch);toast("Saved","ok");_reconnectAfterRestart()});
+    .then(function(){toast("Saved","ok");_updateAgentLocal(id,patch);_showRestartBanner()}).catch(function(e){_updateAgentLocal(id,patch);toast("Saved","ok");_showRestartBanner()});
 }
 function addPeer(id){
   var sel=Q("peer-picker-"+id);if(!sel||!sel.value)return;
@@ -3129,68 +3140,30 @@ function _saveGlobalPeers(peers,msg){
 // Remove departed peers from all other agents' subagent lists
 function _cleanupRemovedPeers(removedIds,currentPeers){
   (D.agents||[]).forEach(function(a){
-    // Only clean up peer agents (non-peers manage their own subagents)
     if(currentPeers.indexOf(a.id)===-1)return;
     var cur=getSubs(a).slice();
     var cleaned=cur.filter(function(s){return removedIds.indexOf(s)===-1});
-    if(cleaned.length===cur.length)return;// nothing to remove
+    if(cleaned.length===cur.length)return;
     var patch={subagents:{allowAgents:cleaned}};
     api("agents/"+encodeURIComponent(a.id),{method:"PUT",body:JSON.stringify(patch)})
-      .then(function(){_updateAgentLocal(a.id,patch)})
-      .catch(function(){});
+      .then(function(){_updateAgentLocal(a.id,patch);_showRestartBanner()})
+      .catch(function(){_showRestartBanner()});
   });
 }
 // Ensure every A2A peer agent has all other peers in its subagents.allowAgents
 function _syncPeerSubagents(peers){
   if(!peers||peers.length<2)return;
   (D.agents||[]).forEach(function(a){
-    if(peers.indexOf(a.id)===-1)return; // not a peer, skip
+    if(peers.indexOf(a.id)===-1)return;
     var cur=getSubs(a).slice();
     var needed=peers.filter(function(p){return p!==a.id&&cur.indexOf(p)===-1});
-    if(needed.length===0)return; // already has all peers
+    if(needed.length===0)return;
     var updated=cur.concat(needed);
     var patch={subagents:{allowAgents:updated}};
     api("agents/"+encodeURIComponent(a.id),{method:"PUT",body:JSON.stringify(patch)})
-      .then(function(){_updateAgentLocal(a.id,patch)})
-      .catch(function(e){toast("Failed to sync subagents for "+a.id+": "+e.message,"err")});
+      .then(function(){_updateAgentLocal(a.id,patch);_showRestartBanner()})
+      .catch(function(e){toast("Failed to sync subagents for "+a.id+": "+e.message,"err");_showRestartBanner()});
   });
-}
-
-// Fix A2A heartbeat: create HEARTBEAT.md + set heartbeat config on agent
-function fixA2AHeartbeat(agentId){
-  var a=null;
-  for(var i=0;i<D.agents.length;i++){if(D.agents[i].id===agentId){a=D.agents[i];break}}
-  if(!a){toast("Agent not found","err");return}
-  var model=getModel(a)||"default";
-  var mdContent="You are a background daemon. Check for new tasks from the orchestrator. Process any pending requests and report results.";
-  var promises=[];
-  // 1) Save HEARTBEAT.md
-  var hbMeta2=a.mdFiles&&a.mdFiles["HEARTBEAT.md"];
-  var hasMd=hbMeta2!=null&&(typeof hbMeta2==="object"?hbMeta2.size>0:(hbMeta2&&hbMeta2.length>0));
-  if(!hasMd){
-    promises.push(
-      api("agents/"+encodeURIComponent(agentId)+"/md/HEARTBEAT.md",{method:"PUT",body:JSON.stringify({content:mdContent})})
-        .then(function(){
-          if(!a.mdFiles)a.mdFiles={};
-          a.mdFiles["HEARTBEAT.md"]={exists:true,lines:1,size:mdContent.length};
-        })
-    );
-  }
-  // 2) Set heartbeat config on agent
-  var hasHb=a.heartbeat&&a.heartbeat.every;
-  if(!hasHb){
-    var patch={heartbeat:{every:"5m",model:model}};
-    promises.push(
-      api("agents/"+encodeURIComponent(agentId),{method:"PUT",body:JSON.stringify(patch)})
-        .then(function(){_updateAgentLocal(agentId,patch)})
-    );
-  }
-  if(promises.length===0){toast("Heartbeat already configured","ok");return}
-  Promise.all(promises).then(function(){
-    toast("Heartbeat configured for "+agentId,"ok");
-    _showRestartBanner();
-    if(drawerAgent&&drawerAgent.id===agentId)renderDrawer();
-  }).catch(function(e){toast("Failed: "+e.message,"err")});
 }
 
 // ── Orchestrator Tab ──
@@ -5511,12 +5484,15 @@ function _hideProgress(){if(_progressLocked)return;var el=Q("progress-bar");if(e
 function _lockProgress(){_progressLocked=true;_showProgress()}
 function _unlockProgress(){_progressLocked=false;_hideProgress()}
 function _showRestartBanner(){
-  if(Q("restart-banner"))return;
-  var b=document.createElement("div");b.id="restart-banner";
-  b.style.cssText="position:fixed;bottom:var(--statusbar-h);left:0;right:0;z-index:9998;background:var(--bg2);border-top:1px solid var(--border);padding:8px 20px;display:flex;align-items:center;justify-content:space-between;gap:12px;font-size:var(--fs-sm);color:var(--tx2)";
-  b.innerHTML='<span>Config changed — restart to apply</span>'
-    +'<button class="btn btn-sm" onclick="_doRestart()" style="background:#00bfa5;color:#fff;border:none;font-weight:600">↻ Restart</button>';
-  document.body.appendChild(b);
+  // Config was written → gateway auto-restarts. Show overlay and wait for it to come back.
+  _lockProgress();
+  _hideRestartBanner();
+  _showRestartOverlay();
+  _waitForGateway(function(){
+    _unlockProgress();
+    _hideRestartOverlay();
+    load();
+  });
 }
 function _hideRestartBanner(){var el=Q("restart-banner");if(el)el.remove()}
 

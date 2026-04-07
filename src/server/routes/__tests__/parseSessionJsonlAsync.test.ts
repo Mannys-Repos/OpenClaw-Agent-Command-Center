@@ -86,7 +86,7 @@ describe("parseSessionJsonlAsync", () => {
         expect(asyncResult.channel).toBe("dashboard");
     });
 
-    it("produces identical output with multiple session entries (last wins)", async () => {
+    it("produces identical output with multiple session entries (first wins)", async () => {
         const fp = writeJsonl("multi-session.jsonl", [
             { type: "session", agentId: "first", channel: "a" },
             { type: "message", message: { role: "user", content: "msg1" }, timestamp: "2024-01-01T00:00:00Z" },
@@ -98,8 +98,8 @@ describe("parseSessionJsonlAsync", () => {
         const asyncResult = await parseSessionJsonlAsync(fp);
 
         expect(asyncResult).toEqual(syncResult);
-        expect(asyncResult.agentId).toBe("second");
-        expect(asyncResult.channel).toBe("b");
+        expect(asyncResult.agentId).toBe("first");
+        expect(asyncResult.channel).toBe("a");
         expect(asyncResult.messages).toHaveLength(2);
     });
 

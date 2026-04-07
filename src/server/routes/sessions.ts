@@ -1,8 +1,6 @@
 import { readFileSync, writeFileSync, existsSync, readdirSync, mkdirSync, unlinkSync, statSync } from "node:fs";
 import { stat as statAsync, readdir as readdirAsync, readFile as readFileAsync, unlink as unlinkAsync, writeFile as writeFileAsync } from "node:fs/promises";
 import { join } from "node:path";
-import { exec } from "node:child_process";
-
 import * as http from "node:http";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import {
@@ -11,6 +9,7 @@ import {
     readConfig,
     resolveHome,
     tryReadFile,
+    execFileAsync,
     AGENTS_STATE_DIR,
     DASHBOARD_SESSIONS_DIR,
 } from "../api-utils.js";
@@ -22,13 +21,15 @@ export function parseSessionJsonl(filePath: string): { messages: any[]; agentId:
     let agentId = "";
     let channel = "";
     let updatedAt: string | null = null;
+    let sessionHeaderFound = false;
     for (const line of raw.split("\n")) {
         if (!line.trim()) continue;
         try {
             const entry = JSON.parse(line);
-            if (entry.type === "session") {
-                agentId = entry.agentId || agentId;
-                channel = entry.channel || channel;
+            if (entry.type === "session" && !sessionHeaderFound) {
+                agentId = entry.agentId || "";
+                channel = entry.channel || "";
+                sessionHeaderFound = true;
             }
             if (entry.type === "message" && entry.message) {
                 messages.push(entry.message);
@@ -46,13 +47,15 @@ export async function parseSessionJsonlAsync(filePath: string): Promise<{ messag
     let agentId = "";
     let channel = "";
     let updatedAt: string | null = null;
+    let sessionHeaderFound = false;
     for (const line of raw.split("\n")) {
         if (!line.trim()) continue;
         try {
             const entry = JSON.parse(line);
-            if (entry.type === "session") {
-                agentId = entry.agentId || agentId;
-                channel = entry.channel || channel;
+            if (entry.type === "session" && !sessionHeaderFound) {
+                agentId = entry.agentId || "";
+                channel = entry.channel || "";
+                sessionHeaderFound = true;
             }
             if (entry.type === "message" && entry.message) {
                 messages.push(entry.message);
@@ -94,28 +97,6 @@ function deleteDashboardSession(key: string): boolean {
     try { unlinkSync(fp); return true; } catch { return false; }
 }
 
-async function listDashboardSessions(): Promise<any[]> {
-    ensureSessionsDir();
-    const sessions: any[] = [];
-    try {
-        for (const f of await readdirAsync(DASHBOARD_SESSIONS_DIR)) {
-            if (!f.endsWith(".json")) continue;
-            try {
-                const raw = await readFileAsync(join(DASHBOARD_SESSIONS_DIR, f), "utf-8");
-                const s = JSON.parse(raw);
-                sessions.push({
-                    sessionKey: s.sessionKey || f.replace(".json", ""),
-                    agentId: s.agentId || "",
-                    channel: s.channel || "dashboard",
-                    messageCount: Array.isArray(s.messages) ? s.messages.length : 0,
-                    updatedAt: s.updatedAt || s.createdAt || null,
-                });
-            } catch { }
-        }
-    } catch { }
-    return sessions;
-}
-
 // ─── Gateway HTTP API caller ───
 function getGatewayPort(config?: any): number {
     if (!config) config = readConfig();
@@ -126,6 +107,8 @@ function callGatewayChat(agentId: string, message: string, sessionKey: string, c
     if (!config) config = readConfig();
     const port = getGatewayPort(config);
     const authToken = config?.gateway?.auth?.token || "";
+
+    // Try REST API first, fall back to CLI if gateway returns 404
     return new Promise((resolve, reject) => {
         const postData = JSON.stringify({
             model: agentId || "default",
@@ -152,6 +135,11 @@ function callGatewayChat(agentId: string, message: string, sessionKey: string, c
             let body = "";
             res.on("data", (chunk: any) => body += chunk);
             res.on("end", () => {
+                // If gateway returns 404, fall back to CLI
+                if (res.statusCode === 404) {
+                    callGatewayChatCli(agentId, message, sessionKey).then(resolve).catch(reject);
+                    return;
+                }
                 if (res.statusCode && res.statusCode >= 400) {
                     try {
                         const err = JSON.parse(body);
@@ -173,126 +161,23 @@ function callGatewayChat(agentId: string, message: string, sessionKey: string, c
                 }
             });
         });
-        req.on("error", (e) => reject(e));
+        req.on("error", () => {
+            // Network error — fall back to CLI
+            callGatewayChatCli(agentId, message, sessionKey).then(resolve).catch(reject);
+        });
         req.on("timeout", () => { req.destroy(); reject(new Error("Gateway request timed out")); });
         req.write(postData);
         req.end();
     });
 }
 
-// ─── Scan all agent session dirs on disk + merge dashboard sessions ───
-async function scanAllSessions(initialSessions: any[] = []): Promise<any[]> {
-    const sessions: any[] = [...initialSessions];
-    const seen = new Set(sessions.map((s: any) => s.sessionKey || s.id));
-
-    let agentDirs: string[] = [];
-    try { agentDirs = await readdirAsync(AGENTS_STATE_DIR); } catch { }
-
-    if (agentDirs.length > 0) {
-        const scanAgent = async (agentId: string) => {
-            const results: any[] = [];
-            const localSeen = new Set<string>();
-            const sessDir = join(AGENTS_STATE_DIR, agentId, "sessions");
-            try { await statAsync(sessDir); } catch { return results; }
-
-            // Read sessions.json index if it exists
-            const indexFile = join(sessDir, "sessions.json");
-            try {
-                const sessIndex = JSON.parse(await readFileAsync(indexFile, "utf-8"));
-                for (const [key, val] of Object.entries(sessIndex)) {
-                    const meta = val as any;
-                    const sid = meta.sessionId || key;
-                    localSeen.add(sid);
-                    localSeen.add(key);
-                    let updatedAt: string | null = meta.updatedAt || meta.lastUpdated || null;
-                    let messageCount = 1;
-                    for (const ext of [".jsonl", ".json"]) {
-                        const fp = join(sessDir, sid + ext);
-                        try {
-                            const st = await statAsync(fp);
-                            updatedAt = updatedAt || st.mtime.toISOString();
-                            if (ext === ".jsonl") messageCount = Math.max(1, Math.round(st.size / 500));
-                            break;
-                        } catch { }
-                    }
-                    results.push({
-                        sessionKey: sid,
-                        agentId: meta.agentId || agentId,
-                        channel: meta.channel || meta.channelType || "",
-                        messageCount,
-                        updatedAt,
-                    });
-                }
-            } catch { }
-
-            // Scan loose session files not in the index
-            let files: string[] = [];
-            try { files = await readdirAsync(sessDir); } catch { return results; }
-            for (const f of files) {
-                if (f === "sessions.json") continue;
-                const isJsonl = f.endsWith(".jsonl");
-                const isJson = f.endsWith(".json");
-                if (!isJson && !isJsonl) continue;
-                const sk = f.replace(/\.(jsonl|json)$/, "");
-                if (localSeen.has(sk)) continue;
-                localSeen.add(sk);
-                try {
-                    const fp = join(sessDir, f);
-                    const st = await statAsync(fp);
-                    let fileAgentId = agentId;
-                    let channel = "";
-                    if (isJsonl) {
-                        try {
-                            const head = (await readFileAsync(fp, "utf-8")).slice(0, 2000);
-                            const firstLine = head.split("\n")[0];
-                            if (firstLine) {
-                                const entry = JSON.parse(firstLine);
-                                if (entry.agentId) fileAgentId = entry.agentId;
-                                if (entry.channel) channel = entry.channel;
-                            }
-                        } catch { }
-                    } else {
-                        try {
-                            const raw = JSON.parse(await readFileAsync(fp, "utf-8"));
-                            if (raw.agentId) fileAgentId = raw.agentId;
-                            if (raw.channel || raw.channelType) channel = raw.channel || raw.channelType;
-                        } catch { }
-                    }
-                    results.push({
-                        sessionKey: sk,
-                        agentId: fileAgentId,
-                        channel,
-                        messageCount: isJsonl ? Math.max(1, Math.round(st.size / 500)) : 1,
-                        updatedAt: st.mtime.toISOString(),
-                    });
-                } catch { }
-            }
-            return results;
-        };
-
-        try {
-            const allResults = await Promise.all(agentDirs.map(scanAgent));
-            for (const agentResults of allResults) {
-                for (const s of agentResults) {
-                    if (seen.has(s.sessionKey)) continue;
-                    seen.add(s.sessionKey);
-                    sessions.push(s);
-                }
-            }
-        } catch { }
-    }
-
-    // Merge dashboard session store — but skip entries where the agent already has a gateway session
-    const dashSess = await listDashboardSessions();
-    const seenFinal = new Set(sessions.map((s: any) => s.sessionKey || s.id));
-    const seenAgents = new Set(sessions.map((s: any) => s.agentId).filter(Boolean));
-    for (const ds of dashSess) {
-        if (seenFinal.has(ds.sessionKey)) continue;
-        if (ds.agentId && seenAgents.has(ds.agentId)) continue;
-        sessions.push(ds);
-    }
-
-    return sessions;
+// CLI fallback for sending messages when gateway REST API is unavailable
+async function callGatewayChatCli(agentId: string, message: string, sessionKey: string): Promise<string> {
+    const args = ["agent", "--message", message];
+    if (agentId) args.push("--agent", agentId);
+    if (sessionKey) args.push("--session-id", sessionKey);
+    const result = await execFileAsync("openclaw", args, { timeout: 180000 });
+    return result.trim() || "(empty response)";
 }
 
 // ─── In-memory session index ───
@@ -490,6 +375,8 @@ export async function refreshSessionIndex(): Promise<void> {
             const isJsonl = entry.filePath.endsWith(".jsonl");
             let agentId = entry.agentId;
             let channel = entry.channel;
+            let messageCount = entry.messageCount;
+            let updatedAt: string | null = st.mtime.toISOString();
 
             if (isJsonl) {
                 try {
@@ -501,11 +388,14 @@ export async function refreshSessionIndex(): Promise<void> {
                         if (parsed.channel) channel = parsed.channel;
                     }
                 } catch { }
+                messageCount = Math.max(1, Math.round(st.size / 500));
             } else if (entry.filePath.endsWith(".json")) {
                 try {
                     const raw = JSON.parse(await readFileAsync(entry.filePath, "utf-8"));
                     if (raw.agentId) agentId = raw.agentId;
                     if (raw.channel || raw.channelType) channel = raw.channel || raw.channelType;
+                    if (Array.isArray(raw.messages)) messageCount = raw.messages.length;
+                    if (raw.updatedAt || raw.createdAt) updatedAt = raw.updatedAt || raw.createdAt;
                 } catch { }
             }
 
@@ -515,8 +405,8 @@ export async function refreshSessionIndex(): Promise<void> {
                 filePath: entry.filePath,
                 channel,
                 gatewayKey: entry.gatewayKey,
-                messageCount: isJsonl ? Math.max(1, Math.round(st.size / 500)) : 1,
-                updatedAt: st.mtime.toISOString(),
+                messageCount,
+                updatedAt,
                 mtime: st.mtimeMs,
             });
         } catch {
@@ -671,97 +561,8 @@ export async function refreshSessionIndex(): Promise<void> {
     } catch { }
 }
 
-// ─── Legacy cache stubs (no-ops, removed in task 5 when route handlers are rewritten) ───
-function isSessionCacheValid(): boolean { return false; }
-function setSessionCache(_sessions: any[]): void { }
-let sessionCache: any[] | null = null;
-function getAgentSessionCache(_agentId: string): any[] | null { return null; }
-function setAgentSessionCache(_agentId: string, _sessions: any[]): void { }
-
-// ─── Scan sessions for a single agent (fast, targeted) ───
-async function scanAgentSessions(agentId: string): Promise<any[]> {
-    const results: any[] = [];
-    const localSeen = new Set<string>();
-    const sessDir = join(AGENTS_STATE_DIR, agentId, "sessions");
-    try { await statAsync(sessDir); } catch { return results; }
-
-    // Read sessions.json index if it exists
-    const indexFile = join(sessDir, "sessions.json");
-    try {
-        const sessIndex = JSON.parse(await readFileAsync(indexFile, "utf-8"));
-        for (const [key, val] of Object.entries(sessIndex)) {
-            const meta = val as any;
-            const sid = meta.sessionId || key;
-            localSeen.add(sid);
-            localSeen.add(key);
-            let updatedAt: string | null = meta.updatedAt || meta.lastUpdated || null;
-            let messageCount = 1;
-            for (const ext of [".jsonl", ".json"]) {
-                const fp = join(sessDir, sid + ext);
-                try {
-                    const st = await statAsync(fp);
-                    updatedAt = updatedAt || st.mtime.toISOString();
-                    if (ext === ".jsonl") messageCount = Math.max(1, Math.round(st.size / 500));
-                    break;
-                } catch { }
-            }
-            results.push({
-                sessionKey: sid,
-                agentId: meta.agentId || agentId,
-                channel: meta.channel || meta.channelType || "",
-                messageCount,
-                updatedAt,
-            });
-        }
-    } catch { }
-
-    // Scan loose session files not in the index
-    let files: string[] = [];
-    try { files = await readdirAsync(sessDir); } catch { return results; }
-    for (const f of files) {
-        if (f === "sessions.json") continue;
-        const isJsonl = f.endsWith(".jsonl");
-        const isJson = f.endsWith(".json");
-        if (!isJson && !isJsonl) continue;
-        const sk = f.replace(/\.(jsonl|json)$/, "");
-        if (localSeen.has(sk)) continue;
-        localSeen.add(sk);
-        try {
-            const fp = join(sessDir, f);
-            const st = await statAsync(fp);
-            let fileAgentId = agentId;
-            let channel = "";
-            if (isJsonl) {
-                try {
-                    const head = (await readFileAsync(fp, "utf-8")).slice(0, 2000);
-                    const firstLine = head.split("\n")[0];
-                    if (firstLine) {
-                        const entry = JSON.parse(firstLine);
-                        if (entry.agentId) fileAgentId = entry.agentId;
-                        if (entry.channel) channel = entry.channel;
-                    }
-                } catch { }
-            } else {
-                try {
-                    const raw = JSON.parse(await readFileAsync(fp, "utf-8"));
-                    if (raw.agentId) fileAgentId = raw.agentId;
-                    if (raw.channel || raw.channelType) channel = raw.channel || raw.channelType;
-                } catch { }
-            }
-            results.push({
-                sessionKey: sk,
-                agentId: fileAgentId,
-                channel,
-                messageCount: isJsonl ? Math.max(1, Math.round(st.size / 500)) : 1,
-                updatedAt: st.mtime.toISOString(),
-            });
-        } catch { }
-    }
-    return results;
-}
-
 // ─── Targeted async scan of a single agent's sessions dir, updating the index ───
-async function scanAndIndexAgentSessions(agentId: string): Promise<void> {
+export async function scanAndIndexAgentSessions(agentId: string): Promise<void> {
     const sessDir = join(AGENTS_STATE_DIR, agentId, "sessions");
     try { await statAsync(sessDir); } catch { return; }
 
@@ -896,37 +697,25 @@ export async function handleSessionRoutes(
             const agentId = decodeURIComponent(sub[1]);
             const scan = url.searchParams.get("scan") === "1";
 
-            // If scan=1, do an incremental mtime-based refresh (no CLI spawn)
+            // If scan=1, do an incremental mtime-based refresh before returning
             if (scan) {
                 await refreshSessionIndex();
             }
 
-            // Collect agent IDs to include: the requested agent + its subagents
+            // Collect agent IDs to include: the requested agent + its subagents from config
             const config = readConfig();
             const agentCfg = (config.agents?.list || []).find((a: any) => a.id === agentId);
             const childIds: string[] = agentCfg?.subagents?.allowAgents || [];
             const allAgentIds = new Set([agentId, ...childIds]);
 
-            // Filter sessionIndex entries by agentId (including subagents and dashboard sessions)
+            // Query sessionIndex for all entries matching agentId or subagent IDs
+            const sessions: SessionIndexEntry[] = [];
             const seen = new Set<string>();
-            const sessions: any[] = [];
             for (const entry of sessionIndex.values()) {
-                if (!allAgentIds.has(entry.agentId) && entry.channel !== "dashboard") continue;
-                // For dashboard entries, only include if they belong to this agent
-                if (entry.channel === "dashboard" && entry.agentId !== agentId) continue;
-                // For non-dashboard entries, agentId must be in allAgentIds (already checked above)
-                if (entry.channel !== "dashboard" && !allAgentIds.has(entry.agentId)) continue;
-
                 if (seen.has(entry.sessionKey)) continue;
+                if (!allAgentIds.has(entry.agentId)) continue;
                 seen.add(entry.sessionKey);
-                sessions.push({
-                    sessionKey: entry.sessionKey,
-                    agentId: entry.agentId,
-                    channel: entry.channel,
-                    gatewayKey: entry.gatewayKey,
-                    messageCount: entry.messageCount,
-                    updatedAt: entry.updatedAt,
-                });
+                sessions.push(entry);
             }
 
             json(res, 200, { sessions, agentId });
@@ -1077,54 +866,43 @@ export async function handleSessionRoutes(
 
             let responseText = "";
 
-            // The openclaw CLI always routes messages to the agent's primary session.
-            // Find the primary session key so the frontend can refresh from the right place.
+            // Default primarySessionKey to the key the frontend sent
             let primarySessionKey = sessionKey;
-            for (const entry of sessionIndex.values()) {
-                if (entry.gatewayKey.endsWith(":main") && entry.filePath.endsWith(".jsonl")) {
-                    // Find the agent:X:main session — that's where the CLI routes messages
-                    const gkAgent = entry.gatewayKey.replace(/:main$/, "").replace(/^agent:/, "");
-                    if (gkAgent === agentId) {
-                        primarySessionKey = entry.sessionKey;
-                        break;
-                    }
-                }
-            }
 
-            // Send via openclaw CLI (the gateway's native message interface)
+            // Send via gateway HTTP API (no CLI subprocess, no out-of-band session creation)
+            const config = readConfig();
             try {
-                const escaped = userMessage.replace(/"/g, '\\"');
-                const agentFlag = agentId ? ` --agent "${agentId}"` : "";
-                const cmd = `openclaw agent --message "${escaped}"${agentFlag}`;
-                const rawOutput = await new Promise<string>((resolve, reject) => {
-                    exec(cmd, { encoding: "utf-8", timeout: 180000 }, (err, stdout, stderr) => {
-                        if (err) reject(new Error(stdout || stderr || err.message));
-                        else resolve(stdout || "");
-                    });
-                });
-                // Strip plugin initialization logs and deprecation warnings from CLI output
-                responseText = rawOutput.split("\n").filter(line =>
-                    !line.startsWith("[plugins]") &&
-                    !line.startsWith("Config warnings") &&
-                    !line.startsWith("(node:") &&
-                    !line.startsWith("(Use `node")
-                ).join("\n").trim();
-            } catch (cliErr: any) {
-                const cliMsg = cliErr?.message || "Message send failed";
-                const isAuthOrLimit = /usage limit|rate.limit|rate_limit|quota|invalid.*key|invalid.*api|unauthorized|401|403|429|too many requests|failover/i.test(cliMsg);
+                responseText = await callGatewayChat(agentId, userMessage, sessionKey, config);
+            } catch (gwErr: any) {
+                const gwMsg = gwErr?.message || "Message send failed";
+                const isAuthOrLimit = /usage limit|rate.limit|rate_limit|quota|invalid.*key|invalid.*api|unauthorized|401|403|429|too many requests|failover/i.test(gwMsg);
                 if (isAuthOrLimit) {
                     json(res, 429, {
-                        error: cliMsg,
+                        error: gwMsg,
                         errorType: "model_limit",
                         userMessageSaved: true,
                     });
                     return true;
                 }
                 json(res, 503, {
-                    error: cliMsg,
+                    error: gwMsg,
                     ok: false,
                 });
                 return true;
+            }
+
+            // After gateway responds, refresh the index to pick up any new session files
+            await refreshSessionIndex();
+
+            // Now resolve the primary session key from the refreshed index
+            for (const entry of sessionIndex.values()) {
+                if (entry.gatewayKey.endsWith(":main") && entry.filePath.endsWith(".jsonl")) {
+                    const gkAgent = entry.gatewayKey.replace(/:main$/, "").replace(/^agent:/, "");
+                    if (gkAgent === agentId) {
+                        primarySessionKey = entry.sessionKey;
+                        break;
+                    }
+                }
             }
 
             json(res, 200, {
@@ -1141,118 +919,129 @@ export async function handleSessionRoutes(
             const body = await parseBody(req);
             const newKey = body.sessionKey ?? `dashboard-${Date.now()}`;
             const agentId = body.agentId || "";
+            const now = new Date().toISOString();
             const session = {
                 sessionKey: newKey,
                 agentId,
                 channel: "dashboard",
                 messages: [],
-                createdAt: new Date().toISOString(),
-                updatedAt: new Date().toISOString(),
+                createdAt: now,
+                updatedAt: now,
             };
             writeDashboardSession(session);
+            const fp = sessionFilePath(newKey);
+            let mtime = 0;
+            try { mtime = statSync(fp).mtimeMs; } catch { }
             sessionIndex.set(newKey, {
                 sessionKey: newKey,
                 agentId,
-                filePath: sessionFilePath(newKey),
+                filePath: fp,
                 channel: "dashboard",
                 gatewayKey: "",
                 messageCount: 0,
-                updatedAt: new Date().toISOString(),
-                mtime: 0,
+                updatedAt: now,
+                mtime,
             });
             json(res, 201, { sessionKey: newKey, ok: true });
             return true;
         }
 
-        // DELETE /sessions/{key} — terminate a session and clean up all files
-        if (method === "DELETE" && sessionKey) {
+        // DELETE /sessions/all:{agentId} — delete ALL sessions for an agent and subagents
+        if (method === "DELETE" && sessionKey && sessionKey.startsWith("all:")) {
             let deleted = false;
+            const agentId = sessionKey.slice(4);
+            const config = readConfig();
+            const agentCfg = (config.agents?.list || []).find((a: any) => a.id === agentId);
+            const childAgentIds: string[] = agentCfg?.subagents?.allowAgents || [];
+            const allAgentIds = [agentId, ...childAgentIds];
+            const allAgentIdSet = new Set(allAgentIds);
 
-            // Special: "all:{agentId}" deletes ALL sessions for an agent AND its subagent children
-            if (sessionKey.startsWith("all:")) {
-                const agentId = sessionKey.slice(4);
-                const config = readConfig();
-                const agentCfg = (config.agents?.list || []).find((a: any) => a.id === agentId);
-                const childAgentIds: string[] = agentCfg?.subagents?.allowAgents || [];
-                const allAgentIds = [agentId, ...childAgentIds];
-                const allAgentIdSet = new Set(allAgentIds);
-
-                // Collect matching entries from sessionIndex by agent ID
-                const toDelete: SessionIndexEntry[] = [];
-                for (const entry of sessionIndex.values()) {
-                    if (allAgentIdSet.has(entry.agentId)) {
-                        toDelete.push(entry);
-                    }
+            // Collect matching entries from sessionIndex by agent ID
+            const toDelete: SessionIndexEntry[] = [];
+            for (const entry of sessionIndex.values()) {
+                if (allAgentIdSet.has(entry.agentId)) {
+                    toDelete.push(entry);
                 }
-
-                // Track which agent session dirs need sessions.json cleanup
-                const agentDirsToClean = new Set<string>();
-
-                // Delete all matching session files (async)
-                const deletePromises: Promise<void>[] = [];
-                for (const entry of toDelete) {
-                    // Delete the session file itself
-                    if (entry.filePath) {
-                        deletePromises.push(
-                            unlinkAsync(entry.filePath).then(() => { deleted = true; }).catch(() => { })
-                        );
-                        // Track agent dir for sessions.json cleanup
-                        for (const aid of allAgentIds) {
-                            const sessDir = join(AGENTS_STATE_DIR, aid, "sessions");
-                            if (entry.filePath.startsWith(sessDir)) {
-                                agentDirsToClean.add(sessDir);
-                            }
-                        }
-                    }
-                    // Delete dashboard JSON file
-                    const dashFp = sessionFilePath(entry.sessionKey);
-                    deletePromises.push(
-                        unlinkAsync(dashFp).then(() => { deleted = true; }).catch(() => { })
-                    );
-                }
-
-                // Also delete dashboard sessions that might not be in the index
-                // (filter by agentId from dashboard files)
-                for (const aid of allAgentIds) {
-                    const sessDir = join(AGENTS_STATE_DIR, aid, "sessions");
-                    agentDirsToClean.add(sessDir);
-                    // Delete all files in the agent sessions dir
-                    try {
-                        const files = await readdirAsync(sessDir);
-                        for (const f of files) {
-                            deletePromises.push(
-                                unlinkAsync(join(sessDir, f)).then(() => { deleted = true; }).catch(() => { })
-                            );
-                        }
-                    } catch { }
-                }
-
-                await Promise.all(deletePromises);
-
-                // Remove all matching entries from sessionIndex immediately
-                for (const entry of toDelete) {
-                    sessionIndex.delete(entry.sessionKey);
-                }
-
-                json(res, 200, { ok: true, deleted, cleanedAll: true, cleanedAgents: allAgentIds });
-                return true;
             }
 
-            // ─── Single session delete ───
+            // Track which agent session dirs need sessions.json cleanup
+            const agentDirsToClean = new Set<string>();
+
+            // Delete all matching session files from disk and dashboard store
+            const deletePromises: Promise<void>[] = [];
+            for (const entry of toDelete) {
+                // Delete the session file itself (JSONL or JSON on disk)
+                if (entry.filePath) {
+                    deletePromises.push(
+                        unlinkAsync(entry.filePath).then(() => { deleted = true; }).catch(() => { })
+                    );
+                    // Track agent dir for sessions.json cleanup
+                    for (const aid of allAgentIds) {
+                        const sessDir = join(AGENTS_STATE_DIR, aid, "sessions");
+                        if (entry.filePath.startsWith(sessDir)) {
+                            agentDirsToClean.add(sessDir);
+                        }
+                    }
+                }
+                // Delete dashboard store JSON file
+                const dashFp = sessionFilePath(entry.sessionKey);
+                deletePromises.push(
+                    unlinkAsync(dashFp).then(() => { deleted = true; }).catch(() => { })
+                );
+            }
+
+            await Promise.all(deletePromises);
+
+            // Clean up sessions.json gateway index for each affected agent dir
+            for (const sessDir of agentDirsToClean) {
+                const indexFile = join(sessDir, "sessions.json");
+                try {
+                    const indexRaw = await readFileAsync(indexFile, "utf-8");
+                    const idx = JSON.parse(indexRaw);
+                    let modified = false;
+                    const deletedSessionKeys = new Set(toDelete.map(e => e.sessionKey));
+                    for (const [key, val] of Object.entries(idx)) {
+                        const meta = val as any;
+                        const sid = meta.sessionId || key;
+                        if (deletedSessionKeys.has(sid) || deletedSessionKeys.has(key) ||
+                            allAgentIdSet.has(meta.agentId)) {
+                            delete idx[key];
+                            modified = true;
+                        }
+                    }
+                    if (modified) {
+                        await writeFileAsync(indexFile, JSON.stringify(idx, null, 2), "utf-8");
+                    }
+                } catch { }
+            }
+
+            // Remove all matching entries from sessionIndex
+            for (const entry of toDelete) {
+                sessionIndex.delete(entry.sessionKey);
+            }
+
+            json(res, 200, { ok: true, deleted, cleanedAll: true, cleanedAgents: allAgentIds });
+            return true;
+        }
+
+        // ─── Single session delete ───
+        // DELETE /sessions/{key} — delete a single session and clean up all storage
+        if (method === "DELETE" && sessionKey) {
+            let deleted = false;
 
             // 1. Look up session in the in-memory index (O(1))
             const entry = sessionIndex.get(sessionKey);
 
-            // 2. Delete the session file (async, ignore ENOENT)
+            // 2. Delete the JSONL/JSON session file from disk
             if (entry && entry.filePath) {
                 try { await unlinkAsync(entry.filePath); deleted = true; } catch { }
             }
 
-            // 3. Delete the dashboard JSON file
+            // 3. Delete from dashboard store JSON
             const dashFp = sessionFilePath(sessionKey);
             try { await unlinkAsync(dashFp); deleted = true; } catch { }
 
-            // 4. Update sessions.json in the agent's sessions dir (async read/write)
+            // 4. Remove from sessions.json gateway index
             if (entry && entry.agentId) {
                 const sessDir = join(AGENTS_STATE_DIR, entry.agentId, "sessions");
                 const indexFile = join(sessDir, "sessions.json");
@@ -1263,6 +1052,7 @@ export async function handleSessionRoutes(
                     for (const [key, val] of Object.entries(idx)) {
                         const sid = (val as any).sessionId || "";
                         if (key === (entry.gatewayKey || "") || sid === sessionKey || key === sessionKey) {
+                            // Also delete any session files referenced by the gateway index entry
                             if (sid) {
                                 for (const ext of [".jsonl", ".json"]) {
                                     try { await unlinkAsync(join(sessDir, sid + ext)); deleted = true; } catch { }
@@ -1277,14 +1067,15 @@ export async function handleSessionRoutes(
                     }
                 } catch { }
 
-                // Also try deleting session files by key name directly
+                // Also try deleting session files by key name directly (covers cases where
+                // the file exists but wasn't tracked in the index entry's filePath)
                 for (const ext of [".jsonl", ".json"]) {
                     const fp = join(sessDir, sessionKey + ext);
                     try { await unlinkAsync(fp); deleted = true; } catch { }
                 }
             }
 
-            // 5. Remove from sessionIndex immediately
+            // 5. Remove from sessionIndex map
             sessionIndex.delete(sessionKey);
 
             json(res, 200, { ok: true, deleted });
