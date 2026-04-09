@@ -19,7 +19,8 @@ workflows — all from your browser.
 <td><img src="screenshots/desktop-tasks.png" alt="Task flows and scheduling" /></td>
 </tr>
 <tr>
-<td colspan="2" align="center"><img src="screenshots/skills-installed.png" alt="Skills management" width="600" /></td>
+<td align="center"><img src="screenshots/skills-installed.png" alt="Skills management" width="300" /></td>
+<td></td>
 </tr>
 </table>
 
