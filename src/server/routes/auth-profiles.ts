@@ -1,5 +1,6 @@
 import { writeFileSync, existsSync, readdirSync } from "node:fs";
 import { join } from "node:path";
+import { request as httpsRequest } from "node:https";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import {
     json,
@@ -95,37 +96,188 @@ export async function handleAuthProfileRoutes(
         return true;
     }
 
-    // ─── POST /api/auth/refresh — refresh an OAuth token via CLI ───
+    // ─── POST /api/auth/refresh — refresh an OAuth token via token endpoint ───
     if (path === "/auth/refresh" && method === "POST") {
-        const body = await parseBody(req);
-        const profileKey = body.profileKey || "";
-        const provider = body.provider || "";
-
-        // Try openclaw auth refresh command
-        let result = "";
-        let success = false;
         try {
-            const provFlag = provider ? ` --provider "${provider}"` : "";
-            const profileFlag = profileKey ? ` --profile "${profileKey}"` : "";
-            result = await execAsync(`openclaw auth refresh${provFlag}${profileFlag}`, { timeout: 30000 });
-            success = true;
-        } catch (e: any) {
-            // Try alternative commands
-            try {
-                result = await execAsync(`openclaw auth login --provider "${provider || profileKey.split(":")[0]}"`, { timeout: 30000 });
-                success = true;
-            } catch (e2: any) {
-                result = (e.message || "") + "\n" + (e2.message || "");
-            }
-        }
+            const body = await parseBody(req);
+            const profileKey = body.profileKey || "";
+            const provider = body.provider || "";
 
-        json(res, success ? 200 : 500, {
-            ok: success,
-            result: result.trim(),
-            note: success
-                ? "Token refresh initiated. Check the API Status page to verify."
-                : "Could not refresh token. You may need to run 'openclaw auth login' manually on the server.",
-        });
+            // Scan all auth-profiles.json files to find the matching OAuth profile
+            const authFiles: string[] = [];
+            if (existsSync(AGENTS_STATE_DIR)) {
+                try {
+                    for (const agentDir of readdirSync(AGENTS_STATE_DIR)) {
+                        for (const sub of ["auth-profiles.json", "agent/auth-profiles.json"]) {
+                            const f = join(AGENTS_STATE_DIR, agentDir, sub);
+                            if (existsSync(f)) authFiles.push(f);
+                        }
+                    }
+                } catch { }
+            }
+            const oauthJsonPath = join(OPENCLAW_DIR, "credentials", "oauth.json");
+            if (existsSync(oauthJsonPath)) authFiles.push(oauthJsonPath);
+
+            // Find the first file that has this profile with a refresh token
+            let refreshToken = "";
+            let sourceFile = "";
+            let profileObj: any = null;
+
+            for (const f of authFiles) {
+                const raw = tryReadFile(f);
+                if (!raw) continue;
+                try {
+                    const data = JSON.parse(raw);
+                    const profiles = data.profiles || data;
+                    const p = profiles[profileKey];
+                    if (p && (p.refresh || p.refresh_token)) {
+                        refreshToken = p.refresh || p.refresh_token;
+                        sourceFile = f;
+                        profileObj = p;
+                        break;
+                    }
+                } catch { }
+            }
+
+            if (!refreshToken) {
+                const provName = provider || profileKey.split(":")[0];
+                json(res, 400, {
+                    ok: false,
+                    result: "No refresh token found for profile \"" + profileKey + "\". Re-authenticate manually on the server:\n\nopenclaw models auth login --provider " + provName,
+                });
+                return true;
+            }
+
+            // Extract client_id from the access token JWT if available
+            let clientId = profileObj?.client_id || "";
+            if (!clientId && profileObj?.access) {
+                try {
+                    const parts = profileObj.access.split(".");
+                    if (parts.length >= 2) {
+                        const payload = JSON.parse(Buffer.from(parts[1], "base64url").toString());
+                        if (payload.client_id) clientId = payload.client_id;
+                    }
+                } catch { }
+            }
+
+            // Determine the token endpoint based on provider
+            const providerName = provider || profileObj?.provider || profileKey.split(":")[0];
+            let tokenUrl = "";
+            if (providerName === "openai-codex" || providerName === "openai") {
+                tokenUrl = "https://auth.openai.com/oauth/token";
+                if (!clientId) clientId = "app_live_cx_sZMRqPKcOe9HMKlRMsYGin5o";
+            } else if (providerName === "google") {
+                tokenUrl = "https://oauth2.googleapis.com/token";
+            } else if (providerName === "anthropic") {
+                tokenUrl = "https://auth.anthropic.com/oauth/token";
+            }
+
+            if (!tokenUrl) {
+                json(res, 400, {
+                    ok: false,
+                    result: "Unknown OAuth provider \"" + providerName + "\". Cannot determine token endpoint.\n\nRe-authenticate manually: openclaw models auth login --provider " + providerName,
+                });
+                return true;
+            }
+
+            console.log("[agent-dashboard] OAuth refresh: provider=%s profileKey=%s clientId=%s tokenUrl=%s sourceFile=%s", providerName, profileKey, clientId, tokenUrl, sourceFile.replace(OPENCLAW_DIR, "~/.openclaw"));
+
+            // Perform the OAuth2 refresh_token grant
+            const params = new URLSearchParams({
+                grant_type: "refresh_token",
+                refresh_token: refreshToken,
+                client_id: clientId,
+            });
+            if (profileObj?.client_secret) {
+                params.set("client_secret", profileObj.client_secret);
+            }
+
+            const tokenResult = await new Promise<any>((resolve, reject) => {
+                const url = new URL(tokenUrl);
+                const postData = params.toString();
+                const httpReq = httpsRequest({
+                    hostname: url.hostname,
+                    port: 443,
+                    path: url.pathname,
+                    method: "POST",
+                    headers: {
+                        "Content-Type": "application/x-www-form-urlencoded",
+                        "Content-Length": String(Buffer.byteLength(postData)),
+                    },
+                }, (httpRes) => {
+                    let data = "";
+                    httpRes.on("data", (chunk: string) => { data += chunk; });
+                    httpRes.on("end", () => {
+                        try { resolve({ status: httpRes.statusCode, body: JSON.parse(data) }); }
+                        catch { resolve({ status: httpRes.statusCode, body: data }); }
+                    });
+                });
+                httpReq.on("error", reject);
+                httpReq.setTimeout(25000, () => { httpReq.destroy(new Error("Token refresh request timed out")); });
+                httpReq.write(postData);
+                httpReq.end();
+            });
+
+            console.log("[agent-dashboard] OAuth refresh response: status=%d hasAccessToken=%s error=%s", tokenResult.status, !!tokenResult.body?.access_token, tokenResult.body?.error || "none");
+
+            if (tokenResult.status !== 200 || tokenResult.body.error) {
+                const errMsg = tokenResult.body?.error_description || tokenResult.body?.error || JSON.stringify(tokenResult.body);
+                json(res, 200, {
+                    ok: false,
+                    result: "Token refresh failed (" + tokenResult.status + "): " + errMsg + "\n\nRe-authenticate manually: openclaw models auth login --provider " + providerName,
+                });
+                return true;
+            }
+
+            const newTokens = tokenResult.body;
+            const newExpiry = newTokens.expires_in
+                ? new Date(Date.now() + newTokens.expires_in * 1000).toISOString()
+                : undefined;
+            const newExpiresMs = newTokens.expires_in
+                ? Date.now() + newTokens.expires_in * 1000
+                : undefined;
+
+            // Update ALL auth-profiles files that have this profile
+            let updatedCount = 0;
+            for (const f of authFiles) {
+                const raw = tryReadFile(f);
+                if (!raw) continue;
+                try {
+                    const data = JSON.parse(raw);
+                    const profiles = data.profiles || data;
+                    const p = profiles[profileKey];
+                    if (!p) continue;
+                    if (newTokens.access_token) {
+                        p.access = newTokens.access_token;
+                        p.token = newTokens.access_token;
+                    }
+                    if (newTokens.refresh_token) {
+                        p.refresh = newTokens.refresh_token;
+                        p.refresh_token = newTokens.refresh_token;
+                    }
+                    if (newExpiresMs) {
+                        p.expires = newExpiresMs;
+                        p.expiry = newExpiry;
+                        p.expires_at = newExpiresMs;
+                    }
+                    if (newTokens.id_token) p.id_token = newTokens.id_token;
+                    writeFileSync(f, JSON.stringify(data, null, 2), "utf-8");
+                    updatedCount++;
+                } catch { }
+            }
+
+            invalidateProviderCache();
+            json(res, 200, {
+                ok: true,
+                note: "Token refreshed successfully. Updated " + updatedCount + " auth file(s). New expiry: " + (newExpiry || "unknown"),
+            });
+        } catch (e: any) {
+            console.error("[agent-dashboard] OAuth refresh error:", e);
+            json(res, 500, {
+                ok: false,
+                result: "Internal error during token refresh: " + (e.message || String(e)),
+            });
+        }
         return true;
     }
 

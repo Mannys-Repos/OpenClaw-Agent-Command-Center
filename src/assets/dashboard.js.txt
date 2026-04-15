@@ -947,28 +947,49 @@ function drawRelMap(){
   // Place infrastructure nodes (embeddings/vector store) if configured
   var infraNodes=[];
   var pe=D.config&&D.config.plugins&&D.config.plugins.entries||{};
+  var slots=D.config&&D.config.plugins&&D.config.plugins.slots||{};
+  var infraLabel="";
+  var infraId="infra:embeddings";
+  // Detect memory-lancedb
+  var lancedbCfg=pe["memory-lancedb"]||{};
+  if(lancedbCfg.enabled!==false&&lancedbCfg.config&&lancedbCfg.config.embedding){
+    var ldbEmb=lancedbCfg.config.embedding;
+    var ldbModel=ldbEmb.model||"";
+    var ldbBase=ldbEmb.baseUrl||"";
+    var ldbProvider=ldbBase.indexOf("11434")>-1?"ollama":"openai";
+    infraLabel="LanceDB + "+ldbProvider+" / "+ldbModel;
+  }
+  // Detect openclaw-mem0 (legacy)
   var mem0Cfg=pe["openclaw-mem0"]||pe["mem0"]||{};
-  if(mem0Cfg.enabled!==false&&mem0Cfg.config){
+  if(!infraLabel&&mem0Cfg.enabled!==false&&mem0Cfg.config){
     var oss=mem0Cfg.config.oss||{};
     var emb=oss.embedder||{};
     var vs=oss.vectorStore||{};
-    var embLabel=(emb.provider||"")+(emb.config&&emb.config.model?" / "+emb.config.model:"");
-    var vsLabel=(vs.provider||"")+(vs.config&&vs.config.host?":"+vs.config.port:"");
-    if(embLabel||vsLabel){
-      var infraLabel="";
-      if(vsLabel)infraLabel+=vsLabel;
-      if(embLabel)infraLabel+=(infraLabel?" + ":"")+embLabel;
-      var infraId="infra:embeddings";
+    var embLabel2=(emb.provider||"")+(emb.config&&emb.config.model?" / "+emb.config.model:"");
+    var vsLabel2=(vs.provider||"")+(vs.config&&vs.config.host?":"+vs.config.port:"");
+    if(vsLabel2)infraLabel+=vsLabel2;
+    if(embLabel2)infraLabel+=(infraLabel?" + ":"")+embLabel2;
+  }
+  // Detect lossless-claw context engine
+  var lcCfg=pe["lossless-claw"]||{};
+  if(lcCfg.enabled!==false&&lcCfg.config){
+    var lcLabel="lossless-claw";
+    if(infraLabel)infraLabel+="\n"+lcLabel;
+    else infraLabel=lcLabel;
+  }
+  if(infraLabel){
+      var infraLines=infraLabel.split("\n");
+      var longestLine=infraLines.reduce(function(a,b){return a.length>b.length?a:b},"");
       infraNodes.push({id:infraId,name:infraLabel,icon:"🧬"});
-      var tw=measureText(infraLabel,"600 "+CH_FONT+"px -apple-system,BlinkMacSystemFont,sans-serif");
+      var tw=measureText(longestLine,"600 "+CH_FONT+"px -apple-system,BlinkMacSystemFont,sans-serif");
       var infraW=Math.max(120,Math.round(tw+40+44+44));
+      var infraH=infraLines.length>1?CH_H+20:CH_H;
       // Position to the right of channels, or centered if no channels
       var infraY=chNodes.length>0?pos[chNodes[0].id].y:((function(){var my=0;agents.forEach(function(a){if(pos[a.id]&&pos[a.id].y+pos[a.id].h>my)my=pos[a.id].y+pos[a.id].h});return my+PADY})());
       var allXs=Object.values(pos).map(function(p){return p.x+p.w/2});
       var maxPosX=allXs.length?Math.max.apply(null,allXs):0;
       var infraX=maxPosX+PADX;
-      pos[infraId]={x:infraX,y:infraY,w:infraW,h:CH_H};
-    }
+      pos[infraId]={x:infraX,y:infraY,w:infraW,h:infraH};
   }
   var allP=Object.values(pos);
   var minX=Math.min.apply(null,allP.map(function(p){return p.x}));
@@ -1169,7 +1190,7 @@ function drawRelMap(){
       +"display:flex;flex-direction:row;align-items:center;justify-content:center;gap:8px;"
       +"user-select:none;cursor:default;opacity:0.85;padding:0 32px;box-sizing:border-box";
     n.innerHTML='<span class="rn-icon">'+esc(inf.icon)+'</span>'
-      +'<span class="ch-node-label infra">'+esc(inf.name)+'</span>';
+      +'<span class="ch-node-label infra">'+esc(inf.name).replace(/\n/g,"<br>")+'</span>';
     domLayer.appendChild(n);
   });
 
@@ -4686,8 +4707,50 @@ function saveModels(){
     toast("Renamed: "+renameList.join(", "),"info");
   }
 
+  // Detect removed aliases and clean up dangling references
+  var removedAliases=[];
+  Object.keys(oldAliasMap).forEach(function(oldAlias){
+    if(!newAliasMap[oldAlias]&&!renames[oldAlias])removedAliases.push(oldAlias);
+  });
+  if(removedAliases.length>0){
+    var removedSet={};removedAliases.forEach(function(a){removedSet[a]=true});
+    // Clean agents.defaults.model
+    var dm2=config.agents.defaults.model;
+    if(dm2){
+      if(typeof dm2==="string"&&removedSet[dm2]){
+        config.agents.defaults.model="";
+      }else if(typeof dm2==="object"){
+        if(dm2.primary&&removedSet[dm2.primary])dm2.primary="";
+        if(dm2.fallbacks&&Array.isArray(dm2.fallbacks)){
+          dm2.fallbacks=dm2.fallbacks.filter(function(f){return!removedSet[f]});
+        }
+      }
+    }
+    // Clean agents.defaults.heartbeat.model
+    var dhb2=config.agents.defaults.heartbeat;
+    if(dhb2&&dhb2.model&&removedSet[dhb2.model])dhb2.model="";
+    // Clean each agent
+    var list2=config.agents.list||[];
+    list2.forEach(function(agent){
+      var m=agent.model;
+      if(m){
+        if(typeof m==="string"&&removedSet[m]){agent.model=""}
+        else if(typeof m==="object"){
+          if(m.primary&&removedSet[m.primary])m.primary="";
+          if(m.fallbacks&&Array.isArray(m.fallbacks)){
+            m.fallbacks=m.fallbacks.filter(function(f){return!removedSet[f]});
+          }
+        }
+      }
+      if(agent.heartbeat&&agent.heartbeat.model&&removedSet[agent.heartbeat.model]){
+        agent.heartbeat.model="";
+      }
+    });
+    toast("Removed aliases: "+removedAliases.join(", "),"info");
+  }
+
   api("config?defer=1",{method:"PUT",body:JSON.stringify({config:config})})
-    .then(function(){toast("Models saved","ok");_deferRestart("Models saved");closePagePanel()}).catch(function(e){toast(e.message,"err")});
+    .then(function(){D.config=config;toast("Models saved","ok");_deferRestart("Models saved");closePagePanel()}).catch(function(e){toast(e.message,"err")});
 }
 
 // ── Global actions ──
@@ -7146,12 +7209,65 @@ function _loadApiStatusInto(targetEl){
   });
 }
 
+function _cleanupProviderAliases(providerName){
+  // Find all model aliases that belong to this provider and remove them + agent references
+  var config=JSON.parse(JSON.stringify(D.config));
+  if(!config.agents||!config.agents.defaults)return;
+  var models=config.agents.defaults.models||{};
+  var removedAliases=[];
+  // Find aliases whose provider/model key starts with this provider name
+  Object.keys(models).forEach(function(key){
+    // key is "provider/model", check if provider matches
+    var prov=key.split("/")[0];
+    if(prov===providerName||prov===providerName.replace(/-/g,"_")){
+      var alias=models[key].alias||"";
+      if(alias)removedAliases.push(alias);
+      delete models[key];
+    }
+  });
+  if(removedAliases.length===0)return;
+  var removedSet={};removedAliases.forEach(function(a){removedSet[a]=true});
+  config.agents.defaults.models=models;
+  // Clean defaults.model
+  var dm=config.agents.defaults.model;
+  if(dm){
+    if(typeof dm==="string"&&removedSet[dm])config.agents.defaults.model="";
+    else if(typeof dm==="object"){
+      if(dm.primary&&removedSet[dm.primary])dm.primary="";
+      if(dm.fallbacks)dm.fallbacks=dm.fallbacks.filter(function(f){return!removedSet[f]});
+    }
+  }
+  if(config.agents.defaults.heartbeat&&config.agents.defaults.heartbeat.model&&removedSet[config.agents.defaults.heartbeat.model]){
+    config.agents.defaults.heartbeat.model="";
+  }
+  // Clean each agent
+  (config.agents.list||[]).forEach(function(agent){
+    var m=agent.model;
+    if(m){
+      if(typeof m==="string"&&removedSet[m])agent.model="";
+      else if(typeof m==="object"){
+        if(m.primary&&removedSet[m.primary])m.primary="";
+        if(m.fallbacks)m.fallbacks=m.fallbacks.filter(function(f){return!removedSet[f]});
+      }
+    }
+    if(agent.heartbeat&&agent.heartbeat.model&&removedSet[agent.heartbeat.model])agent.heartbeat.model="";
+  });
+  // Save
+  api("config?defer=1",{method:"PUT",body:JSON.stringify({config:config})}).then(function(){
+    D.config=config;
+    toast("Cleaned up aliases: "+removedAliases.join(", "),"info");
+    _deferRestart("Provider aliases removed");
+  }).catch(function(){});
+}
+
 function removeAuthProfile(profileKey,source,providerName){
-  if(!confirm("Remove auth profile for "+providerName+"?\n\nProfile: "+profileKey+"\nSource: "+source+"\n\nThis will delete the stored token/key from ALL locations."))return;
+  if(!confirm("Remove auth profile for "+providerName+"?\n\nProfile: "+profileKey+"\nSource: "+source+"\n\nThis will delete the stored token/key, model aliases, and agent references from ALL locations."))return;
   api("auth/profile?defer=1",{method:"DELETE",body:JSON.stringify({profileKey:profileKey,source:source})})
     .then(function(d){
       if(d.deleted){toast("Removed "+providerName+" from: "+(d.deletedFrom||[]).join(", "),"ok");_deferRestart("Auth profile removed")}
       else{toast("Profile not found (may already be removed)","info")}
+      // Clean up model aliases and agent references for this provider
+      _cleanupProviderAliases(providerName);
       // Force cache rebuild then reload the page
       api("models/status/refresh",{method:"POST"}).then(function(){
         showProviderStatus();
@@ -7174,7 +7290,7 @@ function refreshAuthToken(profileKey,providerName){
           +'<div style="color:var(--orange);margin-bottom:12px">Automatic refresh was not possible. You may need to re-authenticate manually on the server.</div>'
           +'<div style="background:var(--bg0);padding:12px;border-radius:var(--radius);font-family:monospace;font-size:var(--fs-mono);margin-bottom:12px">'
           +'<div style="color:var(--tx3);margin-bottom:4px"># Run on the server:</div>'
-          +'openclaw auth login --provider '+esc(providerName)
+          +'openclaw models auth login --provider '+esc(providerName)
           +'</div>'
           +(d.result?'<div style="font-size:var(--fs-sm);color:var(--tx3);margin-top:8px"><div style="font-weight:600;margin-bottom:4px">CLI output:</div><pre style="white-space:pre-wrap;word-break:break-word;background:var(--bg0);padding:8px;border-radius:4px;max-height:200px;overflow:auto">'+esc(d.result)+'</pre></div>':'')
           +'</div>');
@@ -7185,10 +7301,11 @@ function refreshAuthToken(profileKey,providerName){
 }
 
 function removeEnvKey(envVar,providerName){
-  if(!confirm("Remove "+providerName+" API key from ~/.openclaw/.env?\n\nThis will delete the "+envVar+" entry."))return;
+  if(!confirm("Remove "+providerName+" API key from ~/.openclaw/.env?\n\nThis will also remove model aliases and agent references for this provider."))return;
   api("auth/envkey",{method:"DELETE",body:JSON.stringify({envVar:envVar})})
     .then(function(d){
       toast("Removed "+envVar,"ok");
+      _cleanupProviderAliases(providerName);
       _forceRefreshApiStatus();
       _runHealthCheck();
     })
@@ -7655,6 +7772,7 @@ function _startSessionPoll(){
         _sessionPollBusy=false;
         D.agents=d.agents||D.agents;
         D.bindings=d.bindings||D.bindings;
+        if(d.config)D.config=d.config;
         var newFp=_computeGraphFingerprint(D.agents,D.bindings);
         if(newFp!==_graphFingerprint){
           _graphFingerprint=newFp;
