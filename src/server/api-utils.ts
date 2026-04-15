@@ -7,8 +7,8 @@ import * as https from "node:https";
 import type { IncomingMessage, ServerResponse } from "node:http";
 
 // ─── Path constants ───
-export const OPENCLAW_DIR = join(homedir(), ".openclaw");
-export const CONFIG_PATH = join(OPENCLAW_DIR, "openclaw.json");
+export const OPENCLAW_DIR = process.env.OPENCLAW_STATE_DIR || process.env.OPENCLAW_HOME || join(homedir(), ".openclaw");
+export const CONFIG_PATH = process.env.OPENCLAW_CONFIG_PATH || join(OPENCLAW_DIR, "openclaw.json");
 export const AGENTS_STATE_DIR = join(OPENCLAW_DIR, "agents");
 export const DASHBOARD_CONFIG_DIR = join(OPENCLAW_DIR, "extensions", "openclaw-agent-dashboard");
 export const DASHBOARD_CONFIG_PATH = join(DASHBOARD_CONFIG_DIR, "dashboard-config.json");

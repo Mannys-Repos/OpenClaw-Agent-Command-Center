@@ -5,7 +5,7 @@ import { homedir } from "node:os";
 import { randomBytes, scryptSync, timingSafeEqual } from "node:crypto";
 import type { IncomingMessage, ServerResponse } from "node:http";
 
-const DASHBOARD_DIR = join(homedir(), ".openclaw", "extensions", "openclaw-agent-dashboard");
+const DASHBOARD_DIR = join(process.env.OPENCLAW_STATE_DIR || process.env.OPENCLAW_HOME || join(homedir(), ".openclaw"), "extensions", "openclaw-agent-dashboard");
 const CREDENTIALS_PATH = join(DASHBOARD_DIR, ".credentials");
 
 const MAX_AUTH_BODY = 10_240; // 10KB

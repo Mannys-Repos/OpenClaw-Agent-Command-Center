@@ -94,6 +94,7 @@ export function buildDashboardHTML(title: string): string {
     + '<span id="zoom-label" class="zoom-label">100%</span>'
     + '<button class="zoom-btn" onclick="zoomMap(-0.2)">−</button>'
     + '<button class="zoom-btn" onclick="resetMapView()" title="Reset view">⌖</button>'
+    + '<button class="zoom-btn" onclick="refreshGraphCache()" title="Refresh graph cache">↻</button>'
     + '</div>'
     + '</div>\n'
     + '<aside id="agent-list" class="agent-list"><div class="agent-list-head"><span>Agents</span><button class="graph-toggle" id="graph-toggle" onclick="toggleGraph()">Hide Graph</button></div><div id="agent-list-body" class="agent-list-body"></div></aside>'

@@ -380,10 +380,12 @@ function getModelVal(id){
 // ── Graph caching layer ──
 // Fingerprint agents+bindings+channels so we skip expensive graph re-render when nothing changed.
 var _graphFingerprint="";
-var _GRAPH_VERSION="v28"; // bump to invalidate localStorage graph cache after code changes
+var _GRAPH_VERSION="v30"; // bump to invalidate localStorage graph cache after code changes
 function _computeGraphFingerprint(agents,bindings){
   // Deterministic JSON of the fields that affect the graph layout
-  var data=_GRAPH_VERSION+JSON.stringify({
+  var pe=D.config&&D.config.plugins&&D.config.plugins.entries||{};
+  var infraKey=Object.keys(pe).filter(function(k){return pe[k]&&pe[k].enabled!==false&&(k==="memory-lancedb"||k==="openclaw-mem0"||k==="mem0"||k==="lossless-claw")}).join(",");
+  var data=_GRAPH_VERSION+infraKey+JSON.stringify({
     a:(agents||[]).map(function(a){return{id:a.id,name:a.name,icon:a.icon,"default":a["default"],model:a.model,hb:a.heartbeat,subs:getSubs(a),peers:getPeers(a),orch:getToolAlso(a).indexOf("run_task_flow")>-1}}),
     b:(bindings||[]).map(function(b){return{agentId:b.agentId,channel:b.match&&b.match.channel}})
   });
@@ -653,6 +655,7 @@ function zoomMap(delta){
   redrawMap();
 }
 function resetMapView(){mapScale=1;mapOffX=0;mapOffY=0;var lbl=Q("zoom-label");if(lbl)lbl.textContent="100%";drawRelMap();}
+function refreshGraphCache(){try{localStorage.removeItem("oc_graph_html");localStorage.removeItem("oc_graph_fp")}catch(e){}_graphFingerprint="";drawRelMap();toast("Graph cache cleared","ok");}
 function redrawMap(){
   var layer=Q("rel-layer");if(!layer)return;
   layer.style.transform="translate("+mapOffX+"px,"+mapOffY+"px) scale("+mapScale+")";
@@ -944,46 +947,45 @@ function drawRelMap(){
     });
   }
 
-  // Place infrastructure nodes (embeddings/vector store) if configured
+  // Place infrastructure nodes — driven by plugins.slots (role → pluginId)
   var infraNodes=[];
   var pe=D.config&&D.config.plugins&&D.config.plugins.entries||{};
   var slots=D.config&&D.config.plugins&&D.config.plugins.slots||{};
-  var infraLabel="";
+  var infraLines=[];
   var infraId="infra:embeddings";
-  // Detect memory-lancedb
-  var lancedbCfg=pe["memory-lancedb"]||{};
-  if(lancedbCfg.enabled!==false&&lancedbCfg.config&&lancedbCfg.config.embedding){
-    var ldbEmb=lancedbCfg.config.embedding;
-    var ldbModel=ldbEmb.model||"";
-    var ldbBase=ldbEmb.baseUrl||"";
-    var ldbProvider=ldbBase.indexOf("11434")>-1?"ollama":"openai";
-    infraLabel="LanceDB + "+ldbProvider+" / "+ldbModel;
+
+  // Build a label for each active slot
+  var slotLabels={"memory":"Memory","contextEngine":"Context Engine","embedding":"Embedding","vectorStore":"Vector Store","search":"Search"};
+  Object.keys(slots).forEach(function(slotName){
+    var pluginId=slots[slotName];
+    if(!pluginId)return;
+    var entry=pe[pluginId]||{};
+    if(entry.enabled===false)return;
+    var role=slotLabels[slotName]||slotName;
+    infraLines.push(role+": "+pluginId);
+  });
+
+  // Fallback: if no slots defined, scan entries for known plugin kinds
+  if(infraLines.length===0){
+    Object.keys(pe).forEach(function(pluginId){
+      var entry=pe[pluginId];
+      if(!entry||entry.enabled===false)return;
+      // Detect by plugin id patterns
+      if(/memory|mem0|lancedb|qdrant/i.test(pluginId)){
+        infraLines.push("Memory: "+pluginId);
+      }else if(/lossless|context.*engine|compaction/i.test(pluginId)){
+        infraLines.push("Context Engine: "+pluginId);
+      }
+    });
   }
-  // Detect openclaw-mem0 (legacy)
-  var mem0Cfg=pe["openclaw-mem0"]||pe["mem0"]||{};
-  if(!infraLabel&&mem0Cfg.enabled!==false&&mem0Cfg.config){
-    var oss=mem0Cfg.config.oss||{};
-    var emb=oss.embedder||{};
-    var vs=oss.vectorStore||{};
-    var embLabel2=(emb.provider||"")+(emb.config&&emb.config.model?" / "+emb.config.model:"");
-    var vsLabel2=(vs.provider||"")+(vs.config&&vs.config.host?":"+vs.config.port:"");
-    if(vsLabel2)infraLabel+=vsLabel2;
-    if(embLabel2)infraLabel+=(infraLabel?" + ":"")+embLabel2;
-  }
-  // Detect lossless-claw context engine
-  var lcCfg=pe["lossless-claw"]||{};
-  if(lcCfg.enabled!==false&&lcCfg.config){
-    var lcLabel="lossless-claw";
-    if(infraLabel)infraLabel+="\n"+lcLabel;
-    else infraLabel=lcLabel;
-  }
-  if(infraLabel){
-      var infraLines=infraLabel.split("\n");
+
+  if(infraLines.length>0){
+      var infraLabel=infraLines.join("\n");
       var longestLine=infraLines.reduce(function(a,b){return a.length>b.length?a:b},"");
       infraNodes.push({id:infraId,name:infraLabel,icon:"🧬"});
-      var tw=measureText(longestLine,"600 "+CH_FONT+"px -apple-system,BlinkMacSystemFont,sans-serif");
+      var tw=measureText(longestLine,"600 13px -apple-system,BlinkMacSystemFont,sans-serif");
       var infraW=Math.max(120,Math.round(tw+40+44+44));
-      var infraH=infraLines.length>1?CH_H+20:CH_H;
+      var infraH=infraLines.length>1?CH_H+(infraLines.length-1)*18:CH_H;
       // Position to the right of channels, or centered if no channels
       var infraY=chNodes.length>0?pos[chNodes[0].id].y:((function(){var my=0;agents.forEach(function(a){if(pos[a.id]&&pos[a.id].y+pos[a.id].h>my)my=pos[a.id].y+pos[a.id].h});return my+PADY})());
       var allXs=Object.values(pos).map(function(p){return p.x+p.w/2});
@@ -1183,15 +1185,21 @@ function drawRelMap(){
   // Infrastructure nodes (embeddings/vector store)
   infraNodes.forEach(function(inf){
     var p=uPos[inf.id];if(!p)return;
+    var wrap=document.createElement("div");
+    wrap.className="chn-wrap infra-wrap";
+    wrap.style.cssText="position:absolute;left:"+p.x+"px;top:"+p.y+"px;width:"+p.w+"px;height:"+p.h+"px;cursor:pointer";
+    wrap.title="Click to open config";
     var n=document.createElement("div");
     n.className="chn";
-    n.style.cssText="position:absolute;left:"+p.x+"px;top:"+p.y+"px;width:"+p.w+"px;height:"+p.h+"px;"
+    n.style.cssText="width:100%;height:100%;"
       +"background:#0d1520;border:1.5px dashed #6a5acd;border-radius:8px;"
       +"display:flex;flex-direction:row;align-items:center;justify-content:center;gap:8px;"
-      +"user-select:none;cursor:default;opacity:0.85;padding:0 32px;box-sizing:border-box";
-    n.innerHTML='<span class="rn-icon">'+esc(inf.icon)+'</span>'
+      +"user-select:none;opacity:0.85;padding:0 20px;box-sizing:border-box";
+    n.innerHTML='<span class="rn-icon" style="font-size:16px">'+esc(inf.icon)+'</span>'
       +'<span class="ch-node-label infra">'+esc(inf.name).replace(/\n/g,"<br>")+'</span>';
-    domLayer.appendChild(n);
+    wrap.appendChild(n);
+    wrap.addEventListener("click",function(e){e.stopPropagation();showRawConfig()});
+    domLayer.appendChild(wrap);
   });
 
   // Legend — position below the lowest content, aligned right

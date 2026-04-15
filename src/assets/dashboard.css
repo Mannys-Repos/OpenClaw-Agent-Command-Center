@@ -2695,7 +2695,8 @@ html {
 }
 
 .ch-node-label.infra {
-  color: #9a8adf
+  color: #9a8adf;
+  font-size: 13px
 }
 
 /* Graph legend */

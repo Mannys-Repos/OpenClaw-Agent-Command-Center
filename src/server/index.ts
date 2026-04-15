@@ -10,6 +10,7 @@ import { initSessionIndex } from "./routes/sessions.js";
 import { isSetupRequired, isAuthenticated, handleSetup, handleLogin, handleLogout, serveLoginPage } from "./auth.js";
 import { parseFlowDefinitionFile } from "../orchestrator/codegen.js";
 import { TASK_FLOW_TOOL_ID } from "../orchestrator/utils.js";
+import { DASHBOARD_CONFIG_DIR } from "./api-utils.js";
 
 // Lazy-cached icon PNGs — read once on first access, never re-read during crash-restart loops
 let _IOS_ICON: Buffer | null = null;
@@ -49,6 +50,15 @@ export default function register(api: any) {
 
     if (isFirstCall) {
         api.logger.info("[agent-dashboard] Loading Agent Dashboard plugin...");
+
+        // Skip server startup in non-gateway contexts (plugin install, doctor, etc.)
+        // These contexts load plugins for metadata/validation but don't need the HTTP server.
+        const isGatewayContext = !!(api.registerService || api.gateway || api.onGatewayReady);
+        const hasCliHint = process.argv.some((a: string) => /\b(install|uninstall|doctor|plugins|update|check|validate)\b/i.test(a));
+        if (hasCliHint && !isGatewayContext) {
+            api.logger.info("[agent-dashboard] Non-gateway context detected — skipping server startup");
+            return;
+        }
 
         const config = api.config?.plugins?.entries?.["agent-dashboard"]?.config ?? {};
         const port = config.port ?? 19900;
@@ -347,7 +357,7 @@ export default function register(api: any) {
         }
 
         // Register the task flow tool — must happen for EVERY agent context
-        const PLUGIN_DIR = join(homedir(), ".openclaw", "extensions", "openclaw-agent-dashboard");
+        const PLUGIN_DIR = DASHBOARD_CONFIG_DIR;
         const TASKS_DIR = join(PLUGIN_DIR, "Tasks", "flows", "definitions");
         const FLOW_STATE_DIR = join(PLUGIN_DIR, "Tasks", "flows", "state");
         const FLOW_HISTORY_DIR = join(PLUGIN_DIR, "Tasks", "flows", "history");
@@ -405,7 +415,7 @@ export default function register(api: any) {
     // The gateway calls register() per agent. The tool must be registered
     // in each agent's context for it to appear in that agent's tool list.
 
-    const PLUGIN_DIR = join(homedir(), ".openclaw", "extensions", "openclaw-agent-dashboard");
+    const PLUGIN_DIR = DASHBOARD_CONFIG_DIR;
     const TASKS_DIR = join(PLUGIN_DIR, "Tasks", "flows", "definitions");
     const FLOW_STATE_DIR = join(PLUGIN_DIR, "Tasks", "flows", "state");
     const FLOW_HISTORY_DIR = join(PLUGIN_DIR, "Tasks", "flows", "history");
