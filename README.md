@@ -1,6 +1,8 @@
 # OpenClaw Agent Command Center
 
-OpenClaw’s browser dashboard for managing agents, chats, channels, skills, plugins, tasks, and config in one place.
+OpenClaw’s browser dashboard for setting up, seeing, and managing your agents, workflows, skills, plugins, and config in one place.
+
+It cuts down on gateway edits and config hunting by putting the most common OpenClaw actions in a single, visible browser UI.
 
 ![Dashboard overview](screenshots/dashboard-overview.png)
 
