@@ -966,6 +966,50 @@ function drawRelMap(){
     return agents.some(function(a){return a.id===id});
   });
   var pos={};
+  function edgePtFor(layout,id,tx,ty){
+    var p=layout[id];if(!p)return{x:tx,y:ty};
+    var cx=p.x+p.w/2,cy=p.y+p.h/2,dx=tx-cx,dy=ty-cy,len=Math.sqrt(dx*dx+dy*dy)||1;
+    var ux=dx/len,uy=dy/len,t=Math.min(p.w/2/Math.abs(ux||1e-9),p.h/2/Math.abs(uy||1e-9));
+    return{x:cx+ux*t,y:cy+uy*t};
+  }
+  function quadHitsRect(p1,cp,p2,rect,pad){
+    var rx=rect.x-pad,ry=rect.y-pad,rw=rect.w+pad*2,rh=rect.h+pad*2;
+    for(var si=0;si<=18;si++){
+      var t=si/18,mt=1-t;
+      var x=mt*mt*p1.x+2*mt*t*cp.x+t*t*p2.x;
+      var y=mt*mt*p1.y+2*mt*t*cp.y+t*t*p2.y;
+      if(x>=rx&&x<=rx+rw&&y>=ry&&y<=ry+rh)return true;
+    }
+    return false;
+  }
+  function resolveDelegationOcclusion(){
+    var movable=agents.filter(function(a){return !peerSet[a.id]&&parents[a.id]&&parents[a.id].length===0;}).map(function(a){return a.id});
+    if(!movable.length)return;
+    for(var pass=0;pass<4;pass++){
+      var moved=false;
+      movable.forEach(function(id){
+        var rect=pos[id];if(!rect)return;
+        for(var ei=0;ei<delEdges.length;ei++){
+          var e=delEdges[ei];
+          if(e.from===id||e.to===id)continue;
+          if(peerSet[e.from]&&peerSet[e.to])continue;
+          var sp=pos[e.from],dp=pos[e.to];if(!sp||!dp)continue;
+          var sx=sp.x+sp.w/2,sy=sp.y+sp.h/2,dx=dp.x+dp.w/2,dy=dp.y+dp.h/2;
+          var p1=edgePtFor(pos,e.from,dx,dy),p2=edgePtFor(pos,e.to,sx,sy);
+          var mx=(p1.x+p2.x)/2,my=(p1.y+p2.y)/2;
+          var nx=-(p2.y-p1.y)*0.1,ny=(p2.x-p1.x)*0.1;
+          var cp={x:mx+nx,y:my+ny};
+          if(!quadHitsRect(p1,cp,p2,rect,18))continue;
+          var rcx=rect.x+rect.w/2;
+          var shift=(rcx<=cp.x?-1:1)*Math.max(56,Math.round(rect.w*0.45));
+          rect.x+=shift;
+          moved=true;
+          break;
+        }
+      });
+      if(!moved)break;
+    }
+  }
   // Check if layer 0 has non-peer roots that need separation
   var tier0Peers=(tiers[0]||[]).filter(function(id){return peerSet[id]});
   var tier0NonPeers=(tiers[0]||[]).filter(function(id){return!peerSet[id]});
@@ -1018,6 +1062,7 @@ function drawRelMap(){
       }
     });
   }
+  resolveDelegationOcclusion();
   // Place channel nodes BELOW agents, centered under their bound agents
   if(chNodes.length>0){
     // Find the actual lowest agent Y
