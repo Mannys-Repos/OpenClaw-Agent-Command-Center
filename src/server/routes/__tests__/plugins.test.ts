@@ -88,6 +88,36 @@ describe("plugins routes", () => {
             expect(res._body.plugins[0].name).toBe("test-plugin");
             expect(res._body.plugins[0].enabled).toBe(true);
         });
+
+        it("uses the install config key for aliased install-source enabled state", async () => {
+            const { tryReadFile } = await import("../../api-utils.js");
+            mockConfig = {
+                plugins: {
+                    installs: {
+                        "alias-plugin": { installPath: "/tmp/openclaw/extensions/real-plugin" }
+                    },
+                    entries: {
+                        "alias-plugin": { enabled: false },
+                        "real-plugin": { enabled: true }
+                    }
+                }
+            };
+            (tryReadFile as any).mockImplementation((p: string) => {
+                if (p.includes("package.json")) {
+                    return JSON.stringify({ name: "real-plugin", version: "1.0.0", description: "Aliased plugin" });
+                }
+                return null;
+            });
+            const req = mockReq("GET");
+            const res = mockRes();
+            const handled = await handlePluginRoutes(req, res, new URL("http://localhost/api/plugins"), "/plugins");
+            expect(handled).toBe(true);
+            expect(res.statusCode).toBe(200);
+            expect(res._body.plugins).toHaveLength(1);
+            expect(res._body.plugins[0].name).toBe("real-plugin");
+            expect(res._body.plugins[0].configKey).toBe("alias-plugin");
+            expect(res._body.plugins[0].enabled).toBe(false);
+        });
     });
 
     describe("GET /api/plugins — removable flag", () => {
@@ -128,6 +158,30 @@ describe("plugins routes", () => {
             (tryReadFile as any).mockImplementation((p: string) => {
                 if (p.includes("package.json")) {
                     return JSON.stringify({ name: "agent-dashboard", version: "1.0.0" });
+                }
+                return null;
+            });
+            const req = mockReq("GET");
+            const res = mockRes();
+            const handled = await handlePluginRoutes(req, res, new URL("http://localhost/api/plugins"), "/plugins");
+            expect(handled).toBe(true);
+            expect(res.statusCode).toBe(200);
+            expect(res._body.plugins[0].removable).toBe(false);
+        });
+
+        it("protects the openclaw-agent-command-center package from removal", async () => {
+            const { tryReadFile } = await import("../../api-utils.js");
+            mockConfig = {
+                plugins: {
+                    installs: {
+                        "openclaw-agent-command-center": { installPath: "/tmp/openclaw/extensions/openclaw-agent-command-center" }
+                    },
+                    entries: { "openclaw-agent-command-center": { enabled: true } }
+                }
+            };
+            (tryReadFile as any).mockImplementation((p: string) => {
+                if (p.includes("package.json")) {
+                    return JSON.stringify({ name: "openclaw-agent-command-center", version: "1.0.0" });
                 }
                 return null;
             });
@@ -261,6 +315,35 @@ describe("plugins routes", () => {
             expect(written.plugins.slots.memory).toBeUndefined();
             expect(written.agents.list[0].tools.alsoAllow).toBeUndefined();
             expect(written.agents.list[0].tools.deny).toEqual(["other"]);
+        });
+
+        it("removes install-source plugin when config key differs from package name", async () => {
+            const { tryReadFile, writeConfig } = await import("../../api-utils.js");
+            const { rmSync } = await import("node:fs");
+            mockConfig = {
+                plugins: {
+                    installs: {
+                        "my-alias": { installPath: "/tmp/openclaw/extensions/real-plugin" }
+                    },
+                    entries: { "real-plugin": { enabled: true } }
+                },
+                agents: { list: [{ id: "main" }] }
+            };
+            (tryReadFile as any).mockImplementation((p: string) => {
+                if (p.includes("package.json")) {
+                    return JSON.stringify({ name: "real-plugin", version: "1.0.0" });
+                }
+                return null;
+            });
+            const { handled, res } = await postRemove({ name: "real-plugin" });
+            expect(handled).toBe(true);
+            expect(res.statusCode).toBe(200);
+            expect(res._body.ok).toBe(true);
+            expect(rmSync).toHaveBeenCalledWith("/tmp/openclaw/extensions/real-plugin", { recursive: true, force: true });
+            expect(writeConfig).toHaveBeenCalled();
+            const written = (writeConfig as any).mock.calls[0][0];
+            expect(written.plugins.installs["my-alias"]).toBeUndefined();
+            expect(written.plugins.entries["real-plugin"]).toBeUndefined();
         });
 
         it("does not delete install-source plugins outside the managed extensions area", async () => {

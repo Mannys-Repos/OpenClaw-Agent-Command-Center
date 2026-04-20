@@ -2328,8 +2328,8 @@ function renderChannels(a){
     h+='<span class="binding-account">'+esc(acc)+'</span>';
     h+='<span class="binding-peer">'+esc(peer)+'</span>';
     var drawerGi=-1;for(var j=0;j<(D.bindings||[]).length;j++){var db=D.bindings[j];if(db.agentId===a.id&&db.match&&db.match.channel===(m.channel||"")&&(db.match.accountId||"")===(m.accountId||"")&&JSON.stringify(db.match.peer||null)===JSON.stringify(m.peer||null)){drawerGi=j;break}}
-    h+='<button class="btn btn-sm binding-edit-btn" onclick="showEditBindingModal('+drawerGi+')" title="Edit binding">✎</button>';
-    h+='<button class="btn btn-sm btn-danger" onclick="removeBinding(\''+esc(a.id)+'\','+i+')">✕</button>';
+    h+='<button class="btn btn-sm binding-edit-btn" onclick="showEditBindingModal('+drawerGi+')" title="Edit binding">Edit</button>';
+    h+='<button class="btn btn-sm btn-danger" onclick="removeBinding(\''+esc(a.id)+'\','+i+')">Remove</button>';
     h+='</div>';
   });
   h+='</div>';
@@ -2535,7 +2535,7 @@ function renderSessions(a){
       h+='<span class="session-subagent-age">'+ago+'</span>';
       h+='<span class="session-subagent-actions">';
       h+='<button class="btn btn-sm" onclick="event.stopPropagation();openSessionChat(\''+esc(sk)+'\')">👁</button>';
-      h+='<button class="btn btn-sm btn-danger" onclick="event.stopPropagation();endSession(\''+esc(sk)+'\')">✕</button>';
+      h+='<button class="btn btn-sm btn-danger" onclick="event.stopPropagation();endSession(\''+esc(sk)+'\')">End</button>';
       h+='</span></div>';
     });
     h+='</div>';
@@ -2822,7 +2822,7 @@ function _openChatFullscreen(key,msgs,loading,readOnly){
   ov.innerHTML='<div class="fs-editor-head"><h3 class="chat-head-title">💬 '+esc(shortKey)+(readOnly?' <span class="chat-head-status">(read-only)</span>':'')+'</h3>'
     +'<div class="chat-head-actions">'
     +'<button class="btn btn-sm" id="chat-filter-btn" onclick="_toggleChatInternal()">'+(  _chatHideInternal?"Show Internal":"Hide Internal")+'</button>'
-    +'<button class="btn btn-sm" onclick="closeChatView()">✕ Close</button></div></div>'
+    +'<button class="btn btn-sm" onclick="closeChatView()">Close</button></div></div>'
     +'<div id="chat-msgs" class="chat-msgs-container">'
     +(loading?'<div class="loading-center"><span class="spin"></span> Loading…</div>':'')
     +'</div>'
@@ -3084,7 +3084,7 @@ function renderSubagents(a){
       h+='<span class="agent-card-icon">'+agentIcon(target||{})+'</span>';
       h+='<div class="flex-1"><div class="agent-card-name '+tone+'">'+esc(target?target.name||s:s)+'</div>';
       h+='<div class="section-desc agent-card-desc">'+esc(target?getModel(target):"")+'</div></div>';
-      h+='<button class="btn btn-sm btn-danger" onclick="removeSubagent(\''+esc(a.id)+'\',\''+esc(s)+'\')">✕</button>';
+      h+='<button class="btn btn-sm btn-danger" onclick="removeSubagent(\''+esc(a.id)+'\',\''+esc(s)+'\')">Remove</button>';
       h+='</div>';
     });
     h+='</div>';
@@ -3723,9 +3723,9 @@ function renderChannelsPage(){
       h+='<span class="ch-card-icon">'+chIcon(ch)+'</span>';
       h+='<span class="ch-card-name">'+esc(ch)+'</span>';
       h+='<div class="ch-card-actions">';
-      h+='<span class="badge channel-status-badge '+(chEnabled?"badge-green":"badge-red")+'" onclick="toggleChannelPage(\''+esc(ch)+'\','+(!chEnabled)+')">'+(chEnabled?"Online":"Off")+'</span>';
-      h+='<button class="btn btn-sm" onclick="editChannelSettings(\''+esc(ch)+'\')">⚙</button>';
-      h+='<button class="btn btn-sm btn-danger" onclick="deleteChannelPage(\''+esc(ch)+'\')">✕</button>';
+      h+='<span class="badge channel-status-badge '+(chEnabled?"badge-green":"badge-red")+'" onclick="toggleChannelPage(\''+esc(ch)+'\','+(!chEnabled)+')">'+(chEnabled?"Online":"Offline")+'</span>';
+      h+='<button class="btn btn-sm" onclick="editChannelSettings(\''+esc(ch)+'\')">Edit</button>';
+      h+='<button class="btn btn-sm btn-danger" onclick="deleteChannelPage(\''+esc(ch)+'\')">Remove</button>';
       h+='</div></div>';
       h+='<div class="ch-card-body">';
       h+='<div class="ch-int-empty center">No accounts configured.<br><br><button class="btn btn-accent btn-sm" onclick="showAddAccountModal(\''+esc(ch)+'\')">+ Add Account</button></div>';
@@ -3754,9 +3754,9 @@ function renderChannelsPage(){
       h+='</div>';
       h+='<div class="ch-card-actions">';
       h+='<span class="ch-card-acc-dot" style="background:'+(accEnabled?"var(--green)":"var(--red)")+'"></span>';
-      h+='<span class="badge channel-status-badge compact '+(chEnabled?"badge-green":"badge-red")+'" onclick="toggleChannelPage(\''+esc(ch)+'\','+(!chEnabled)+')">'+(chEnabled?"Online":"Off")+'</span>';
-      h+='<button class="btn btn-sm" onclick="editAccountPage(\''+esc(ch)+'\',\''+esc(accName)+'\')">✎</button>';
-      h+='<button class="btn btn-sm btn-danger" onclick="deleteChannelPage(\''+esc(ch)+'\')">✕</button>';
+      h+='<span class="badge channel-status-badge compact '+(chEnabled?"badge-green":"badge-red")+'" onclick="toggleChannelPage(\''+esc(ch)+'\','+(!chEnabled)+')">'+(chEnabled?"Online":"Offline")+'</span>';
+      h+='<button class="btn btn-sm" onclick="editAccountPage(\''+esc(ch)+'\',\''+esc(accName)+'\')">Edit</button>';
+      h+='<button class="btn btn-sm btn-danger" onclick="deleteChannelPage(\''+esc(ch)+'\')">Remove</button>';
       h+='</div></div>';
 
       // Body
@@ -3788,8 +3788,8 @@ function renderChannelsPage(){
           h+='<span class="ch-card-binding-agent" style="color:'+col+'">'+esc(aid)+'</span>';
           h+='<span class="ch-card-binding-route">'+esc(route)+'</span>';
           h+='<span class="ch-card-binding-actions">';
-          h+='<span onclick="event.stopPropagation();showEditBindingModal('+gi+')" title="Edit">✎</span>';
-          h+='<span onclick="event.stopPropagation();removeBindingGlobal('+gi+')" title="Remove">✕</span>';
+          h+='<span onclick="event.stopPropagation();showEditBindingModal('+gi+')" title="Edit">Edit</span>';
+          h+='<span onclick="event.stopPropagation();removeBindingGlobal('+gi+')" title="Remove">Remove</span>';
           h+='</span></div>';
         });
         h+='</div></div>';
@@ -3914,7 +3914,7 @@ function renderDiscordGuilds(prefix,accData){
       h+='<div class="guild-head-row">';
       h+='<div class="fg fg-no-margin">'+tip("Guild ID","Discord server ID.")+'<input id="'+gp+'id" value="'+esc(gid)+'" placeholder="1234567890" class="fg-compact" /></div>';
       h+='<label class="perm-item perm-item-auto"><input type="checkbox" id="'+gp+'requireMention"'+(g.requireMention?" checked":"")+' /> @mention</label>';
-      h+='<button class="btn btn-sm btn-danger" onclick="document.getElementById(\''+gp+'block\').remove()">✕</button>';
+      h+='<button class="btn btn-sm btn-danger" onclick="document.getElementById(\''+gp+'block\').remove()">Remove</button>';
       h+='</div>';
       // Row 2: Users + Channels side by side
       h+='<div class="guild-body-row">';
@@ -3938,7 +3938,7 @@ function addDiscordGuild(prefix){
   h+='<div class="guild-head-row">';
   h+='<div class="fg fg-no-margin">'+tip("Guild ID","Discord server ID.")+'<input id="'+gp+'id" value="" placeholder="1234567890" class="fg-compact" /></div>';
   h+='<label class="perm-item perm-item-auto"><input type="checkbox" id="'+gp+'requireMention" /> @mention</label>';
-  h+='<button class="btn btn-sm btn-danger" onclick="document.getElementById(\''+gp+'block\').remove()">✕</button>';
+   h+='<button class="btn btn-sm btn-danger" onclick="document.getElementById(\''+gp+'block\').remove()">Remove</button>';
   h+='</div>';
   h+='<div class="guild-body-row">';
   h+='<div class="fg fg-no-margin">'+tip("Allowed Users","Comma-separated user IDs.")+'<input id="'+gp+'users" value="" placeholder="user IDs" class="fg-compact" /></div>';
@@ -6034,7 +6034,7 @@ function renderFlowsSection(){
   if(_pendingFlowsCache.length>0){
     h+='<div class="tasks-subsection">';
     h+='<div class="tasks-subsection-head"><div class="tasks-subsection-header">Active Flows</div>';
-    h+='<button class="btn btn-sm btn-danger" onclick="clearActiveFlows()">✕ Clear All</button>';
+    h+='<button class="btn btn-sm btn-danger" onclick="clearActiveFlows()">Clear All</button>';
     h+='</div>';
     h+='<div class="tasks-list">';
     // Show all active flows with step progress
@@ -6048,14 +6048,14 @@ function renderFlowsSection(){
   h+='<div class="tasks-subsection">';
   h+='<div class="tasks-subsection-head"><div class="tasks-subsection-header">Execution History</div>';
   if(_flowHistoryCache.length>0){
-    h+='<button class="btn btn-sm btn-danger" onclick="clearFlowHistory()">✕ Clear History</button>';
+    h+='<button class="btn btn-sm btn-danger" onclick="clearFlowHistory()">Clear History</button>';
   }
   h+='</div>';
   if(!_flowHistoryCache||_flowHistoryCache.length===0){
     if(running.length===0&&waiting.length===0){
-      h+='<div class="tasks-empty"><div class="tasks-empty-icon">📋</div>No flows yet. Define a flow in the Orchestrator tab to get started.</div>';
+      h+='<div class="empty"><div class="empty-icon">📋</div>No flows yet.<br><span class="section-desc">Define a flow in the Orchestrator tab to get started.</span></div>';
     }else{
-      h+='<div class="tasks-empty"><div class="tasks-empty-icon">📋</div>No completed flows in the last 7 days</div>';
+      h+='<div class="empty"><div class="empty-icon">📋</div>No completed flows in the last 7 days</div>';
     }
   }else{
     h+='<div class="tasks-list">';
@@ -6111,7 +6111,7 @@ function _renderRegisteredFlowCard(f){
   h+='</div>';
   h+='<div class="cron-card-actions">';
   if(isOrphan){
-    h+='<button class="btn btn-sm btn-danger" onclick="deleteOrchFlow(\''+esc(f.agentId)+'\',\''+esc(f.name)+'\')">✕ Delete</button>';
+    h+='<button class="btn btn-sm btn-danger" onclick="deleteOrchFlow(\''+esc(f.agentId)+'\',\''+esc(f.name)+'\')">Delete</button>';
   }else{
     h+='<button class="btn btn-sm" onclick="editFlowForAgent(\''+esc(f.agentId)+'\')">✎ Edit</button>';
   }
@@ -6164,11 +6164,11 @@ function _renderFlowCard(p){
   if(isWaiting){
     h+='<div class="task-card-actions">';
     h+='<button class="btn btn-sm btn-accent" onclick="dashboardApproveFlow(\''+esc(p.token||p.resumeToken)+'\',true)">✓ Approve</button>';
-    h+='<button class="btn btn-sm btn-danger" onclick="dashboardApproveFlow(\''+esc(p.token||p.resumeToken)+'\',false)">✕ Deny</button>';
+    h+='<button class="btn btn-sm btn-danger" onclick="dashboardApproveFlow(\''+esc(p.token||p.resumeToken)+'\',false)">Deny</button>';
     h+='</div>';
   }else{
     h+='<div class="task-card-actions">';
-    var actionLabel=isOrphan?'✕ Clear':'✕ Cancel';
+    var actionLabel=isOrphan?'Clear':'Cancel';
     h+='<button class="btn btn-sm btn-danger" onclick="cancelActiveFlow(\''+esc(p.token)+'\')">'+actionLabel+'</button>';
     h+='</div>';
   }
@@ -6341,10 +6341,10 @@ function renderScheduledSection(tasks){
   if(_tasksLoading&&(!tasks||tasks.length===0)){
     h+='<div class="loading-center"><span class="spin"></span> Loading cron jobs…</div>';
   }else if(!tasks||tasks.length===0){
-    h+='<div class="tasks-empty"><div class="tasks-empty-icon">⏰</div>';
+    h+='<div class="empty"><div class="empty-icon">⏰</div>';
     h+='No cron jobs configured.<br>';
-    h+='<div class="tasks-empty-copy">Cron jobs run as agent turns on a schedule via <code>openclaw cron</code>.</div>';
-    h+='<button class="btn btn-accent mt-md" onclick="showCreateCronJob()">+ Create your first cron job</button></div>';
+    h+='<span class="section-desc">Cron jobs run as agent turns on a schedule via <code>openclaw cron</code>.</span><br><br>';
+    h+='<button class="btn btn-accent" onclick="showCreateCronJob()">+ Create your first cron job</button></div>';
   }else{
     h+='<div class="tasks-list">';
     tasks.forEach(function(t){ h+=renderCronJobCard(t); });
@@ -6401,7 +6401,7 @@ function renderCronJobCard(t){
   h+='<button class="btn btn-sm" onclick="runCronJobNow(\''+esc(t.id)+'\')">▶ Run</button>';
   h+='<button class="btn btn-sm" onclick="showEditCronJob(\''+esc(t.id)+'\')">✎ Edit</button>';
   h+='<button class="btn btn-sm" onclick="showCronJobRuns(\''+esc(t.id)+'\',\''+esc(t.name||t.id)+'\')">📋 Runs</button>';
-    h+='<button class="btn btn-sm btn-danger" onclick="deleteCronJob(\''+esc(t.id)+'\',\''+esc(t.name||t.id)+'\')">✕ Delete</button>';
+    h+='<button class="btn btn-sm btn-danger" onclick="deleteCronJob(\''+esc(t.id)+'\',\''+esc(t.name||t.id)+'\')">Delete</button>';
   h+='</div>';
   h+='</div>';
   // Meta row
@@ -7081,7 +7081,7 @@ function renderExecCard(ex){
   h+='</div>';
   // Action buttons
   h+='<div class="wf-exec-actions">';
-  h+='<button class="btn btn-sm btn-danger" onclick="event.stopPropagation();deleteFlowExec(\''+esc(ex.flowId)+'\')"'+(isRunning?' disabled title="Cannot delete a running execution"':'')+'>✕ Delete</button>';
+  h+='<button class="btn btn-sm btn-danger" onclick="event.stopPropagation();deleteFlowExec(\''+esc(ex.flowId)+'\')"'+(isRunning?' disabled title="Cannot delete a running execution"':'')+'>Delete</button>';
   h+='<span class="wf-exec-chevron" style="transform:rotate('+(isExpanded?"90":"0")+'deg)">▶</span>';
   h+='</div>';
   h+='</div>';
@@ -7288,11 +7288,11 @@ function _loadApiStatusInto(targetEl){
       h+=esc(c.source);
       h+='</div>';
       h+='<div class="flex-row flex-shrink-0">';
-      if(c.envVar)h+='<button class="btn btn-sm" onclick="editApiKey(\''+esc(c.envVar)+'\',\''+esc(c.name)+'\')" title="View / Edit key">✎</button>';
+      if(c.envVar)h+='<button class="btn btn-sm" onclick="editApiKey(\''+esc(c.envVar)+'\',\''+esc(c.name)+'\')" title="View / Edit key">Edit</button>';
       if(c.billingUrl)h+='<a href="'+c.billingUrl+'" target="_blank" class="btn btn-sm" style="padding:5px 14px;font-size:var(--fs-sm);text-decoration:none" title="Billing dashboard">💳</a>';
       if(c.isOAuth)h+='<button class="btn btn-sm" onclick="refreshAuthToken(\''+esc(c.profileKey)+'\',\''+esc(c.name)+'\')" title="Refresh token">↻</button>';
-      if(c.isOAuth||c.profileKey)h+='<button class="btn btn-sm btn-danger" onclick="removeAuthProfile(\''+esc(c.profileKey)+'\',\''+esc(c.source)+'\',\''+esc(c.name)+'\')" title="Remove">✕</button>';
-      else if(c.envVar)h+='<button class="btn btn-sm btn-danger" onclick="removeEnvKey(\''+esc(c.envVar)+'\',\''+esc(c.name)+'\')" title="Remove key">✕</button>';
+      if(c.isOAuth||c.profileKey)h+='<button class="btn btn-sm btn-danger" onclick="removeAuthProfile(\''+esc(c.profileKey)+'\',\''+esc(c.source)+'\',\''+esc(c.name)+'\')" title="Remove">Remove</button>';
+      else if(c.envVar)h+='<button class="btn btn-sm btn-danger" onclick="removeEnvKey(\''+esc(c.envVar)+'\',\''+esc(c.name)+'\')" title="Remove key">Remove</button>';
       h+='</div></div>';
 
       h+='</div>';

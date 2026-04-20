@@ -323,9 +323,11 @@ export async function handleTaskRoutes(
     if (taskCancelMatch && !path.startsWith("/tasks/flows") && method === "POST") {
         const taskId = decodeURIComponent(taskCancelMatch[1]);
         // Heartbeat disable (still in openclaw.json — heartbeats are agent config)
+        let deferred = false;
         const hbMatch = taskId.match(/^heartbeat:(.+)$/);
         if (hbMatch) {
             const defer = url.searchParams?.get("defer") === "1";
+            deferred = defer;
             const config = defer ? readEffectiveConfig() : readConfig();
             const agentId = hbMatch[1];
             const agent = (config.agents?.list || []).find((a: any) => a.id === agentId);
@@ -343,7 +345,7 @@ export async function handleTaskRoutes(
             await execAsync(`openclaw cron remove "${shellEsc(taskId)}"`, { timeout: 10000 });
         } catch { }
         deleteCachedCli("tasks-list");
-        json(res, 200, { ok: true });
+        json(res, 200, { ok: true, deferred });
         return true;
     }
 

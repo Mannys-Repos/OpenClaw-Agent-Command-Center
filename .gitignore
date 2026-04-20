@@ -29,6 +29,10 @@ Thumbs.db
 *.swo
 *~
 
+# Temp QA / runtime logs
+.tmp-qa-server.log
+.tmp-qa-state/
+
 # IDE
 .idea/
 .vscode/

@@ -26,6 +26,8 @@ interface PluginInfo {
     enabled: boolean;
     kind?: string;
     removable: boolean;
+    /** Original config key for install-source plugins (may differ from package name). */
+    configKey?: string;
 }
 
 function readPluginPackageJson(pluginPath: string): { name: string; version?: string; description?: string; openclaw?: any } | null {
@@ -45,7 +47,7 @@ function readPluginPackageJson(pluginPath: string): { name: string; version?: st
 
 function isProtectedPlugin(name: string): boolean {
     // Protect the dashboard plugin from accidental removal
-    return name === "agent-dashboard" || name === "openclaw-agent-dashboard";
+    return name === "agent-dashboard" || name === "openclaw-agent-dashboard" || name === "openclaw-agent-command-center";
 }
 
 function scanPlugins(): PluginInfo[] {
@@ -63,16 +65,18 @@ function scanPlugins(): PluginInfo[] {
         if (!info.installPath || !existsSync(info.installPath)) continue;
         const pkg = readPluginPackageJson(info.installPath);
         if (!pkg) continue;
+        const displayName = pkg.name || name;
         seen.add(info.installPath);
         plugins.push({
-            name: pkg.name || name,
+            name: displayName,
             version: pkg.version,
             description: pkg.description,
             path: info.installPath,
             source: "install",
             enabled: pluginEntries[name]?.enabled !== false,
             kind: pkg.openclaw?.kind || pkg.openclaw?.tools ? "tools" : undefined,
-            removable: !isProtectedPlugin(pkg.name || name),
+            removable: !isProtectedPlugin(displayName),
+            configKey: name,
         });
     }
 
@@ -188,7 +192,8 @@ function removePluginFromConfig(config: any, plugin: PluginInfo): { deletedPaths
 
     if (plugin.source === "install") {
         const installs = config.plugins?.installs || {};
-        const installPath = installs[name]?.installPath;
+        const installKey = plugin.configKey || name;
+        const installPath = installs[installKey]?.installPath;
         const managedExtensionsDir = join(OPENCLAW_DIR, "extensions");
         if (installPath && isManagedPath(installPath, managedExtensionsDir)) {
             try {
@@ -198,7 +203,7 @@ function removePluginFromConfig(config: any, plugin: PluginInfo): { deletedPaths
                 }
             } catch { /* ignore deletion errors */ }
         }
-        delete installs[name];
+        delete installs[installKey];
     }
 
     if (plugin.source === "loadPath") {

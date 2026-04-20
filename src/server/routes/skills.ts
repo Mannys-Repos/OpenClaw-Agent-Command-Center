@@ -122,7 +122,6 @@ Read the skill file before acting when a request matches a skill below.
 ${lines.join("\n")}
 `;
     writeFileSync(skillsMdPath, content, "utf-8");
-    writeFileSync(skillsMdPath, content, "utf-8");
 }
 
 function syncSkillsToAllWorkspaces(config?: any): void {

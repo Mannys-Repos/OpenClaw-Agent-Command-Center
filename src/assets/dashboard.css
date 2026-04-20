@@ -939,6 +939,7 @@ label.lbl {
   background: var(--bg3);
   color: var(--tx1);
   font-size: var(--fs-base);
+  line-height: 1;
   cursor: pointer;
   font-family: inherit;
   transition: .15s
@@ -982,13 +983,31 @@ label.lbl {
   font-size: var(--fs-base)
 }
 
-/* Tasks destructive buttons — consistent min-width and centered alignment */
+/* Unified destructive-action treatment across all card surfaces */
 .tasks-subsection .btn-sm.btn-danger,
 .cron-card-actions .btn-sm.btn-danger,
 .task-card-actions .btn-sm.btn-danger,
-.wf-exec-actions .btn-sm.btn-danger {
+.wf-exec-actions .btn-sm.btn-danger,
+.plugin-card-actions .btn-sm.btn-danger,
+.ch-card-actions .btn-sm.btn-danger {
   min-width: 88px;
   justify-content: center
+}
+
+/* Unified metadata row treatment */
+.task-meta-row,
+.cron-card-meta,
+.cron-card-times {
+  display: flex;
+  gap: 16px;
+  flex-wrap: wrap;
+  font-size: var(--fs-sm);
+  color: var(--tx2)
+}
+
+.task-meta-row strong {
+  color: var(--tx1);
+  font-weight: 600
 }
 
 /* Forms */
@@ -1039,19 +1058,19 @@ label {
 }
 
 .fg {
-  margin-bottom: 22px
+  margin-bottom: var(--sp-lg)
 }
 
 .fg-row {
   display: grid;
   grid-template-columns: 1fr 1fr;
-  gap: 18px
+  gap: var(--sp-md)
 }
 
 .fg-row3 {
   display: grid;
   grid-template-columns: 1fr 1fr 1fr;
-  gap: 18px
+  gap: var(--sp-md)
 }
 
 .code-ed {
@@ -1182,7 +1201,8 @@ label {
   border-radius: 16px;
   font-size: var(--fs-sm);
   font-weight: 600;
-  letter-spacing: .3px
+  letter-spacing: .3px;
+  text-transform: uppercase
 }
 
 .badge-green {
@@ -1908,14 +1928,17 @@ label {
 }
 
 /* Misc */
-.empty {
+/* Unified empty-state treatment across all surfaces */
+.empty,
+.tasks-empty {
   text-align: center;
   padding: 40px;
   color: var(--tx3);
   font-size: var(--fs-md)
 }
 
-.empty-icon {
+.empty-icon,
+.tasks-empty-icon {
   font-size: 40px;
   margin-bottom: 10px
 }
@@ -1996,7 +2019,10 @@ label {
   margin-bottom: 24px;
 }
 
-.tasks-subsection-header {
+.tasks-subsection-header,
+.ch-card-section-title,
+.skills-group-label,
+.scheduled-title {
   font-size: var(--fs-sm);
   font-weight: 700;
   color: var(--tx3);
@@ -2030,25 +2056,12 @@ label {
   font-size: var(--fs-base);
 }
 
-.tasks-empty-icon {
-  font-size: 28px;
-  margin-bottom: 8px;
-}
-
 .scheduled-head {
   display: flex;
   align-items: center;
   justify-content: space-between;
   gap: var(--sp-sm);
   margin-bottom: 16px
-}
-
-.scheduled-title {
-  font-size: var(--fs-sm);
-  font-weight: 700;
-  text-transform: uppercase;
-  letter-spacing: .5px;
-  color: var(--tx3)
 }
 
 .tasks-empty-copy {
@@ -2857,6 +2870,170 @@ label {
   .session-row-actions {
     width: 100%
   }
+
+  /* ── Portrait-mobile touch-target hardening ── */
+  .zoom-btn {
+    width: 40px;
+    height: 40px;
+    font-size: 18px
+  }
+
+  .close-btn {
+    min-width: 40px;
+    min-height: 40px;
+    padding: 4px 10px
+  }
+
+  .rn-delete {
+    width: 28px;
+    height: 28px;
+    font-size: 14px;
+    opacity: 1
+  }
+
+  .md-tb-btn {
+    width: 40px;
+    height: 36px;
+    font-size: var(--fs-sm)
+  }
+
+  .tip-icon {
+    width: 18px;
+    height: 18px
+  }
+
+  .binding-edit-btn {
+    padding: 6px 12px;
+    min-height: 36px
+  }
+
+  .skill-action-btn {
+    padding: 6px 14px;
+    min-height: 36px
+  }
+
+  .btn-sm {
+    min-height: 36px
+  }
+
+  .agent-list-item {
+    padding: 12px 16px
+  }
+
+  .agent-list-icon {
+    font-size: 24px;
+    width: 32px
+  }
+
+  .session-subagent-row {
+    padding: 8px 0
+  }
+
+  #statusbar {
+    flex-wrap: wrap;
+    gap: 6px 14px;
+    min-height: auto;
+    padding: 6px 12px
+  }
+
+  .chat-msg {
+    max-width: 92%
+  }
+
+  .chat-msgs-container {
+    padding: 10px
+  }
+
+  .chat-input-bar {
+    padding: 8px 10px
+  }
+
+  .chat-bubble {
+    padding: 10px 12px
+  }
+
+  .chat-input-field {
+    padding: 10px 14px
+  }
+
+  .chat-send-btn {
+    padding: 8px 16px
+  }
+
+  .models-tabs {
+    margin: 0 -16px 20px;
+    padding: 0 16px
+  }
+
+  .api-summary {
+    flex-direction: column
+  }
+
+  .api-summary-card {
+    width: 100%
+  }
+
+  .pending-approval-card {
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 12px
+  }
+
+  .heartbeat-row {
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 6px;
+    padding: 10px 14px
+  }
+
+  .wf-exec-head {
+    padding: 12px 14px;
+    gap: 10px
+  }
+
+  .wf-exec-actions {
+    flex-wrap: wrap
+  }
+
+  .task-card {
+    padding: 12px 14px
+  }
+
+  .cron-card {
+    padding: 12px 14px
+  }
+
+  .plugin-card {
+    padding: 12px 14px
+  }
+
+  .ch-card-body {
+    padding: 12px 14px
+  }
+
+  .ch-card-footer {
+    padding: 0 12px 12px
+  }
+
+  .ch-card-head {
+    padding: 10px 12px
+  }
+
+  .skills-header {
+    flex-direction: column;
+    align-items: flex-start
+  }
+
+  .skill-card-row {
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 10px
+  }
+
+  .skill-card-actions {
+    width: 100%;
+    justify-content: flex-end
+  }
 }
 
 /* Drawer narrow mode — applied via JS when right panel < 600px */
@@ -3204,7 +3381,7 @@ html {
 
 /* Banner buttons */
 .btn-banner {
-  padding: 5px 12px;
+  padding: 6px 14px;
   border: none;
   border-radius: 6px;
   cursor: pointer;
@@ -4053,7 +4230,6 @@ html {
 }
 
 .btn-banner.restart {
-  padding: 6px 14px;
   background: #00bfa5;
   color: #fff;
   border: none;
@@ -4064,7 +4240,6 @@ html {
 }
 
 .btn-banner.limit-primary {
-  padding: 6px 14px;
   background: var(--red);
   color: #fff;
   border: none;
@@ -4075,7 +4250,6 @@ html {
 }
 
 .btn-banner.limit-ghost {
-  padding: 6px 14px;
   background: transparent;
   color: #ff9999;
   border: 1px solid var(--red);
@@ -4965,8 +5139,8 @@ code {
 }
 
 .ch-card-section-title {
-  font-size: var(--fs-xs);
-  font-weight: 600;
+  font-size: var(--fs-sm);
+  font-weight: 700;
   color: var(--tx3);
   text-transform: uppercase;
   letter-spacing: .5px;
@@ -5563,6 +5737,21 @@ code {
     flex-wrap: wrap;
   }
 
+  .ch-card-head {
+    align-items: flex-start;
+    flex-wrap: wrap;
+  }
+
+  .ch-card-actions {
+    width: 100%;
+    justify-content: flex-end;
+    flex-wrap: wrap;
+  }
+
+  .ch-card-actions .btn-sm.btn-danger {
+    min-width: 0;
+  }
+
   /* Drawer tabs: scroll hint via fade edge */
   .drawer-tabs {
     -webkit-overflow-scrolling: touch;
@@ -5669,9 +5858,16 @@ code {
 }
 
 .btn-xs {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
   padding: 3px 10px;
   font-size: var(--fs-xs);
-  border-radius: 4px
+  line-height: 1;
+  border-radius: 4px;
+  cursor: pointer;
+  font-family: inherit;
+  transition: .15s
 }
 
 .skills-group {
@@ -5685,13 +5881,13 @@ code {
 .skills-group-label {
   font-size: var(--fs-sm);
   font-weight: 700;
-  color: var(--tx2);
-  margin-bottom: 10px;
+  color: var(--tx3);
+  margin-bottom: 12px;
   display: flex;
   align-items: center;
   gap: 6px;
   text-transform: uppercase;
-  letter-spacing: .4px
+  letter-spacing: .5px
 }
 
 .skills-group-count {
@@ -5728,7 +5924,7 @@ code {
 
 /* Skill card */
 .skill-card {
-  padding: 14px 16px;
+  padding: 16px 18px;
   margin-bottom: 8px;
   background: var(--bg2);
   border: 1px solid var(--border);
@@ -6082,5 +6278,209 @@ code {
 @media(max-width:900px) {
   .plugin-grid {
     grid-template-columns: 1fr
+  }
+}
+
+/* ── Extra-narrow portrait phones (<=480px) ── */
+@media(max-width:480px) {
+  .page-panel-body {
+    padding: 12px 14px
+  }
+
+  .page-panel-head {
+    padding: 12px 14px
+  }
+
+  .drawer-body {
+    padding: 12px 14px
+  }
+
+  .drawer-head {
+    padding: 12px 14px
+  }
+
+  .modal-body {
+    padding: 12px 14px
+  }
+
+  .modal-head {
+    padding: 12px 14px
+  }
+
+  .fg {
+    margin-bottom: 12px
+  }
+
+  .task-card-header {
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 10px
+  }
+
+  .task-card-actions {
+    width: 100%;
+    justify-content: flex-end
+  }
+
+  .cron-card-header {
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 8px
+  }
+
+  .cron-card-actions {
+    width: 100%;
+    justify-content: flex-end
+  }
+
+  .session-row {
+    padding: 12px 14px;
+    gap: 10px
+  }
+
+  .session-actions {
+    width: 100%;
+    justify-content: flex-end
+  }
+
+  .file-row-head {
+    padding: 10px 12px
+  }
+
+  .tool-profile-grid {
+    grid-template-columns: repeat(2, 1fr) !important
+  }
+
+  .gen-all-row {
+    flex-direction: column;
+    align-items: stretch;
+    gap: 10px
+  }
+
+  .custom-tool-row {
+    flex-direction: column;
+    align-items: stretch;
+    gap: 10px
+  }
+
+  .custom-tool-input {
+    max-width: none
+  }
+
+  .model-custom-row {
+    flex-direction: column
+  }
+
+  .fb-add-row {
+    flex-direction: column;
+    align-items: stretch;
+    gap: 10px
+  }
+
+  .fb-drop {
+    width: 100%
+  }
+
+  .fb-custom-input {
+    width: 100%
+  }
+
+  .orch-actions {
+    flex-direction: column;
+    align-items: stretch;
+    gap: 10px
+  }
+
+  .orch-actions .btn {
+    width: 100%;
+    justify-content: center
+  }
+
+  .peer-card-list {
+    flex-direction: column
+  }
+
+  .peer-card {
+    width: 100%
+  }
+
+  .cfg-actions {
+    flex-direction: column;
+    align-items: stretch;
+    gap: 10px
+  }
+
+  .cfg-actions .btn {
+    width: 100%;
+    justify-content: center
+  }
+
+  .cfg-toolbar {
+    flex-direction: column;
+    align-items: stretch
+  }
+
+  .cfg-add-section {
+    flex-direction: column;
+    align-items: stretch;
+    gap: 10px
+  }
+
+  .save-row .btn {
+    width: 100%;
+    justify-content: center
+  }
+
+  .file-actions-row {
+    flex-direction: column;
+    align-items: stretch;
+    gap: 10px
+  }
+
+  .file-actions-row .btn {
+    width: 100%;
+    justify-content: center
+  }
+
+  .tasks-actions {
+    flex-direction: column;
+    align-items: stretch;
+    gap: 8px
+  }
+
+  .tasks-actions .btn {
+    width: 100%;
+    justify-content: center
+  }
+
+  .tasks-tabs-row {
+    flex-direction: column;
+    align-items: stretch;
+    gap: 10px
+  }
+
+  .tasks-tabs {
+    width: 100%
+  }
+
+  .tasks-tab {
+    flex: 1;
+    text-align: center;
+    padding: 8px 10px
+  }
+
+  .topbar-left h1 {
+    font-size: var(--fs-base)
+  }
+
+  .logo img {
+    width: 32px;
+    height: 32px
+  }
+
+  .hamburger-btn {
+    width: 40px;
+    height: 40px;
+    font-size: 20px
   }
 }
