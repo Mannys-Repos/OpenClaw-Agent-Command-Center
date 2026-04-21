@@ -40,6 +40,7 @@ function getManagedSkillEnabled(skillsCfg: any, agentId: string, dirName: string
     if (tier === "managed") {
         const globalEntry = skillsCfg?.[GLOBAL_MANAGED_SKILLS_KEY]?.[dirName];
         if (globalEntry !== undefined) return globalEntry.enabled !== false;
+        return false;
     }
 
     return true;
@@ -57,6 +58,13 @@ function setGlobalManagedSkillEnabled(skillsCfg: any, dirName: string, enabled: 
         delete entries[dirName];
         if (Object.keys(entries).length === 0) delete skillsCfg[key];
     }
+}
+
+function ensureGlobalManagedSkillEnabled(skillsCfg: any, dirName: string): boolean {
+    if (!skillsCfg[GLOBAL_MANAGED_SKILLS_KEY]) skillsCfg[GLOBAL_MANAGED_SKILLS_KEY] = {};
+    if (skillsCfg[GLOBAL_MANAGED_SKILLS_KEY][dirName] !== undefined) return false;
+    skillsCfg[GLOBAL_MANAGED_SKILLS_KEY][dirName] = { enabled: true };
+    return true;
 }
 
 // ─── Sync enabled skills to workspace SKILLS.md ───
@@ -92,12 +100,7 @@ export function syncSkillsToWorkspace(agentId: string, config?: any): void {
                 if (pending.some((op) => op.dirName === entry && op.scope === tier && (tier === "managed" || op.agentId === agentId || op.agentId === "__global__"))) continue;
                 const skillDir = join(base, entry);
                 try { if (!statSync(skillDir).isDirectory()) continue; } catch { continue; }
-                if (tier === "managed") {
-                    const globalEntry = skillsCfg?.[GLOBAL_MANAGED_SKILLS_KEY]?.[entry];
-                    if (globalEntry !== undefined && globalEntry.enabled === false) continue;
-                }
-                const agentEntry = skillsCfg?.[agentId]?.[entry];
-                if (agentEntry !== undefined && agentEntry.enabled === false) continue;
+                if (!getManagedSkillEnabled(skillsCfg, agentId, entry, tier)) continue;
                 const skillMdPath = join(skillDir, "SKILL.md");
                 if (!existsSync(skillMdPath)) continue;
                 try {
@@ -325,6 +328,22 @@ export async function handleSkillRoutes(
         const targetDir = scope === "managed" ? join(OPENCLAW_DIR, "skills") : join(workspace, "skills");
         if (!existsSync(targetDir)) mkdirSync(targetDir, { recursive: true });
 
+        const collectSkillDirs = (dir: string): string[] => {
+            const dirs: string[] = [];
+            try {
+                for (const entry of readdirSync(dir)) {
+                    const skillDir = join(dir, entry);
+                    try {
+                        if (statSync(skillDir).isDirectory() && existsSync(join(skillDir, "SKILL.md"))) {
+                            dirs.push(entry);
+                        }
+                    } catch { }
+                }
+            } catch { }
+            return dirs;
+        };
+        const managedBefore = scope === "managed" ? new Set(collectSkillDirs(targetDir)) : null;
+
         let tmpBase: string | undefined;
         try {
             if (source === "clawhub") {
@@ -368,7 +387,16 @@ export async function handleSkillRoutes(
                     await execFileAsync("cp", ["-r", skillPath, dest], { timeout: 10000 });
                 }
             }
-            if (scope === "managed") syncSkillsToAllWorkspaces(config);
+            if (scope === "managed") {
+                const skillsCfg = readSkillsConfig();
+                let changed = false;
+                for (const skillName of collectSkillDirs(targetDir)) {
+                    if (managedBefore?.has(skillName)) continue;
+                    changed = ensureGlobalManagedSkillEnabled(skillsCfg, skillName) || changed;
+                }
+                if (changed) writeSkillsConfig(skillsCfg);
+                syncSkillsToAllWorkspaces(config);
+            }
             else syncSkillsToWorkspace(agentId, config);
             json(res, 200, { ok: true });
         } catch (err: any) {
@@ -444,7 +472,11 @@ export async function handleSkillRoutes(
         await ensureReadFileAllowed(config, agentId);
 
         // Sync SKILLS.md before writing config (writeConfig triggers gateway restart)
-        if (scope === "managed") syncSkillsToAllWorkspaces(config);
+        if (scope === "managed") {
+            const skillsCfg = readSkillsConfig();
+            if (ensureGlobalManagedSkillEnabled(skillsCfg, dirName)) writeSkillsConfig(skillsCfg);
+            syncSkillsToAllWorkspaces(config);
+        }
         else syncSkillsToWorkspace(agentId, config);
         const defer = _url.searchParams?.get("defer") === "1";
         if (defer) {

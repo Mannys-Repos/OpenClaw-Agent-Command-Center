@@ -162,12 +162,18 @@ describe("skills routes — global list", () => {
         expect(res._body.skills).toHaveLength(1);
         expect(res._body.skills[0].name).toBe("My Skill");
         expect(res._body.skills[0].tier).toBe("managed");
+        expect(res._body.skills[0].enabled).toBe(false);
     });
 
     it("refreshes every agent workspace when a managed skill is installed", async () => {
         mockConfig = {
             agents: { list: [{ id: "main" }, { id: "alpha" }, { id: "beta" }] },
         };
+        mockSkillsConfigFile = JSON.stringify({
+            __globalManagedSkills: {
+                "shared-skill": { enabled: true },
+            },
+        });
 
         const { readdirSync, readFileSync, writeFileSync } = await import("node:fs");
         (readdirSync as any).mockImplementation((p: string) => {
@@ -175,6 +181,9 @@ describe("skills routes — global list", () => {
             return [];
         });
         (readFileSync as any).mockImplementation((p: string) => {
+            if (p === "/tmp/openclaw/dashboard/skills-config.json") {
+                return mockSkillsConfigFile;
+            }
             if (p === "/tmp/openclaw/skills/shared-skill/SKILL.md") {
                 return "---\nname: Shared Skill\ndescription: shared\n---\n\nbody";
             }
@@ -204,8 +213,16 @@ describe("skills routes — global list", () => {
         mockConfig = {
             agents: { list: [{ id: "main" }, { id: "alpha" }, { id: "beta" }] },
         };
+        mockSkillsConfigFile = JSON.stringify({
+            __globalManagedSkills: {
+                "shared-skill": { enabled: true },
+            },
+        });
         const { readFileSync, writeFileSync } = await import("node:fs");
         (readFileSync as any).mockImplementation((p: string) => {
+            if (p === "/tmp/openclaw/dashboard/skills-config.json") {
+                return mockSkillsConfigFile;
+            }
             if (p === "/tmp/openclaw/skills/shared-skill/SKILL.md") {
                 return "---\nname: Shared Skill\ndescription: shared\n---\n\nbody";
             }

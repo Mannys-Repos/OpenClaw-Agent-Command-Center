@@ -64,4 +64,15 @@ describe("syncSkillsToWorkspace", () => {
         expect(skillsMd).toContain("Local Skill");
         expect(skillsMd).not.toContain("Shared Skill");
     });
+
+    it("omits managed skills that lack config entries from workspace SKILLS.md", async () => {
+        writeFileSync(join(rootDashboard, "skills-config.json"), JSON.stringify({}), "utf-8");
+
+        const { syncSkillsToWorkspace } = await import("../skills.js");
+        syncSkillsToWorkspace("main", { agents: { list: [{ id: "main", workspace: join(root, "workspace", "main") }] } });
+
+        const skillsMd = readFileSync(join(root, "workspace", "main", "SKILLS.md"), "utf-8");
+        expect(skillsMd).toContain("Local Skill");
+        expect(skillsMd).not.toContain("Shared Skill");
+    });
 });
