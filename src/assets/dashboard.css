@@ -1432,6 +1432,17 @@ label {
   color: var(--tx3)
 }
 
+.binding-empty-state {
+  margin-top: 8px;
+  padding: 10px 12px;
+  background: var(--bg2);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  color: var(--tx3);
+  font-size: var(--fs-sm);
+  line-height: 1.4
+}
+
 .guild-auto-note {
   margin-top: 10px;
   padding: 10px 12px;

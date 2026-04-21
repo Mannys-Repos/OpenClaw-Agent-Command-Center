@@ -13,6 +13,13 @@ function extractFunction(source: string, name: string, nextName: string): string
 }
 
 describe("dashboard channels visibility", () => {
+    function loadDiscordBindingHelpers(source: string, endMarker: string): string {
+        const start = source.indexOf("function _getDiscordBindingAccountIds(");
+        const end = source.indexOf(endMarker, start + 1);
+        if (start < 0 || end < 0) throw new Error(`Unable to locate helpers before ${endMarker}`);
+        return source.slice(start, end);
+    }
+
     it("keeps binding-only channels visible alongside configured ones", () => {
         const source = readFileSync(DASHBOARD_JS_PATH, "utf-8");
         const visibleFn = extractFunction(source, "_getVisibleChannels", "_setEffectiveBindings");
@@ -57,22 +64,119 @@ describe("dashboard channels visibility", () => {
         expect(channelsBody.innerHTML).toContain("beta");
     });
 
-    it("captures guild IDs in Discord binding modals", () => {
+    it("renders dependent Discord guild and channel dropdowns", () => {
         const source = readFileSync(DASHBOARD_JS_PATH, "utf-8");
-        const addPeerFn = extractFunction(source, "_buildBindingAccPeer", "onBindingChChange");
-        const editPeerFn = extractFunction(source, "_buildEditBindingAccPeer", "onEditBindingChChange");
+        const addPeerFn = loadDiscordBindingHelpers(source, "function onBindingChChange()");
         const ctx: any = {
-            D: { channels: { discord: { accounts: { default: {} } } } },
+            D: {
+                channels: {
+                    discord: {
+                        accounts: {
+                            default: {
+                                guilds: {
+                                    "guild-1": { channels: { "chan-1": { enabled: true } } },
+                                    "guild-2": { channels: { "chan-2": { enabled: true } } },
+                                },
+                            },
+                            support: {
+                                guilds: {
+                                    "guild-9": { channels: { "chan-9": { enabled: true } } },
+                                },
+                            },
+                        },
+                    },
+                },
+            },
+            V: (id: string) => values[id] || "",
+            tip: (_label: string, body: string) => body,
+            esc: (value: unknown) => String(value ?? ""),
+        };
+        const values: Record<string, string> = {};
+
+        vm.runInNewContext(addPeerFn, ctx);
+
+        values["ab-acc"] = "default";
+        const defaultHtml = ctx._buildBindingAccPeer("discord");
+        expect(defaultHtml).toContain("guild-1");
+        expect(defaultHtml).toContain("guild-2");
+        expect(defaultHtml).not.toContain("guild-9");
+
+        values["ab-guild-id"] = "guild-1";
+        const filteredHtml = ctx._buildBindingAccPeer("discord");
+        expect(filteredHtml).toContain("chan-1");
+        expect(filteredHtml).not.toContain("chan-2");
+        expect(filteredHtml).not.toContain("chan-9");
+
+        values["ab-acc"] = "";
+        values["ab-guild-id"] = "";
+        const anyAccountHtml = ctx._buildBindingAccPeer("discord");
+        expect(anyAccountHtml).toContain("any (all accounts)");
+        expect(anyAccountHtml).toContain("guild-9");
+    });
+
+    it("preserves missing guild and channel selections when editing stale bindings", () => {
+        const source = readFileSync(DASHBOARD_JS_PATH, "utf-8");
+        const editPeerFn = loadDiscordBindingHelpers(source, "function onEditBindingChChange()");
+        const ctx: any = {
+            D: {
+                channels: {
+                    discord: {
+                        accounts: {
+                            default: {
+                                guilds: {
+                                    "guild-9": { channels: { "chan-9": { enabled: true } } },
+                                },
+                            },
+                        },
+                    },
+                },
+            },
             tip: (_label: string, body: string) => body,
             esc: (value: unknown) => String(value ?? ""),
         };
 
-        vm.runInNewContext(addPeerFn, ctx);
         vm.runInNewContext(editPeerFn, ctx);
 
-        expect(ctx._buildBindingAccPeer("discord")).toContain("ab-guild-id");
-        expect(ctx._buildBindingAccPeer("discord")).toContain("Exact Discord bindings");
-        expect(ctx._buildEditBindingAccPeer("discord", { guildId: "guild-1", peer: { kind: "channel", id: "chan-1" } })).toContain("eb-guild-id");
+        const html = ctx._buildEditBindingAccPeer("discord", {
+            accountId: "default",
+            guildId: "guild-missing",
+            peer: { kind: "channel", id: "chan-missing" },
+        });
+
+        expect(html).toContain("(missing) guild-missing");
+        expect(html).toContain("(missing) chan-missing");
+        expect(html).toContain("eb-guild-id");
+        expect(html).toContain("eb-peer-id");
+    });
+
+    it("shows empty-state help when guilds or channels are unavailable", () => {
+        const source = readFileSync(DASHBOARD_JS_PATH, "utf-8");
+        const addPeerFn = loadDiscordBindingHelpers(source, "function onBindingChChange()");
+        const ctx: any = {
+            D: {
+                channels: {
+                    discord: {
+                        accounts: {
+                            default: { guilds: {} },
+                        },
+                    },
+                },
+            },
+            V: (id: string) => values[id] || "",
+            tip: (_label: string, body: string) => body,
+            esc: (value: unknown) => String(value ?? ""),
+        };
+        const values: Record<string, string> = { "ab-acc": "default" };
+
+        vm.runInNewContext(addPeerFn, ctx);
+
+        const html = ctx._buildBindingAccPeer("discord");
+        expect(html).toContain("No configured Discord guilds for the selected account.");
+
+        ctx.D.channels.discord.accounts.default.guilds = { "guild-1": { channels: {} } };
+        values["ab-guild-id"] = "guild-1";
+        const html2 = ctx._buildBindingAccPeer("discord");
+        expect(html2).toContain("No configured channels for the selected guild.");
     });
 
     it("sends guild IDs when saving Discord bindings", () => {
