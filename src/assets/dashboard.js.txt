@@ -4531,11 +4531,66 @@ function _describeBindingRoute(m){
   if(m.accountId&&m.accountId!=="*"){
     var bits=["account: "+m.accountId];
     if(m.guildId)bits.push("guild: "+m.guildId);
+    if(m.teamId)bits.push("team: "+m.teamId);
+    if(m.groupId)bits.push("group: "+m.groupId);
     if(m.channel_id||m.channelId)bits.push("channel: "+(m.channel_id||m.channelId));
     return bits.join(" · ");
   }
   if(m.accountId==="*")return"wildcard";
   return"all channels";
+}
+
+function _bindingGroupKey(chName){
+  var cfg=(D.channels||{})[chName]||{};
+  var accounts=cfg.accounts||{};
+  var keys=["guilds","teams","workspaces","groups"];
+  for(var i=0;i<keys.length;i++){
+    var key=keys[i];
+    for(var accName in accounts){
+      if(accounts[accName]&&accounts[accName][key]&&typeof accounts[accName][key]==="object")return key;
+    }
+  }
+  return "";
+}
+
+function _bindingGroupField(chName){
+  var key=_bindingGroupKey(chName);
+  if(key==="guilds")return"guildId";
+  if(key==="teams")return"teamId";
+  if(key==="workspaces")return"workspaceId";
+  if(key==="groups")return"groupId";
+  return"";
+}
+
+function _bindingGroupLabel(chName){
+  var key=_bindingGroupKey(chName);
+  if(key==="guilds")return"Guild";
+  if(key==="teams")return"Team";
+  if(key==="workspaces")return"Workspace";
+  return"Group";
+}
+
+function _bindingTargetLabel(chName){
+  if(chName==="discord")return"Discord Channel";
+  if(chName==="slack")return"Slack Channel";
+  return"Target";
+}
+
+function _bindingSupportsScopedTargets(chName){
+  return !!_bindingGroupKey(chName);
+}
+
+function _selectedValues(id){
+  var el=Q(id);
+  if(el&&el.options&&typeof el.options.length==="number"){
+    var out=[];
+    for(var i=0;i<el.options.length;i++){
+      if(el.options[i]&&el.options[i].selected)out.push(String(el.options[i].value||"").trim());
+    }
+    if(out.length>0||el.multiple)return out;
+  }
+  var v=V(id).trim();
+  return v?[v]:[];
 }
 
 function _getDiscordBindingAccountIds(chName){
@@ -4556,11 +4611,12 @@ function _getDiscordGuildOptions(chName, accName, currentGuildId, preserveMissin
   var cfg=(D.channels||{})[chName]||{};
   var accounts=cfg.accounts||{};
   var scope=_getDiscordBindingAccountScope(chName, accName);
+  var groupKey=_bindingGroupKey(chName);
   var seen={};
   var options=[];
   scope.forEach(function(an){
-    var guilds=((accounts[an]||{}).guilds)||{};
-    Object.keys(guilds).forEach(function(gid){
+    var groups=((accounts[an]||{})[groupKey])||{};
+    Object.keys(groups).forEach(function(gid){
       if(seen[gid])return;
       seen[gid]=true;
       options.push({value:gid,label:gid});
@@ -4576,12 +4632,13 @@ function _getDiscordChannelOptions(chName, accName, guildId, currentPeerId, pres
   var cfg=(D.channels||{})[chName]||{};
   var accounts=cfg.accounts||{};
   var scope=_getDiscordBindingAccountScope(chName, accName);
+  var groupKey=_bindingGroupKey(chName);
   var seen={};
   var options=[];
   if(guildId){
     scope.forEach(function(an){
-      var guilds=((accounts[an]||{}).guilds)||{};
-      var g=guilds[guildId]||{};
+      var groups=((accounts[an]||{})[groupKey])||{};
+      var g=groups[guildId]||{};
       var chans=g.channels||{};
       Object.keys(chans).forEach(function(cid){
         if(seen[cid])return;
@@ -4596,14 +4653,17 @@ function _getDiscordChannelOptions(chName, accName, guildId, currentPeerId, pres
   return options;
 }
 
-function _renderDiscordSelect(id,label,tipText,value,options,placeholder,onchange,emptyMessage,disabled){
+function _renderDiscordSelect(id,label,tipText,value,options,placeholder,onchange,emptyMessage,disabled,multiple,selectedValues){
   var h='<div class="fg">'+tip(label,tipText);
-  h+='<select id="'+id+'" onchange="'+onchange+'"'+(disabled?' disabled':'')+'>';
+  var selectedMap={};
+  if(Array.isArray(selectedValues))selectedValues.forEach(function(v){selectedMap[String(v)]=true;});
+  h+='<select id="'+id+'" onchange="'+onchange+'"'+(disabled?' disabled':'')+(multiple?' multiple':'')+'>';
   if(placeholder!==null&&placeholder!==undefined){
     h+='<option value="">'+esc(placeholder)+'</option>';
   }
   options.forEach(function(opt){
-    h+='<option value="'+esc(opt.value)+'"'+(opt.value===value?' selected':'')+(opt.missing?' data-missing="1"':'')+'>'+esc(opt.label)+'</option>';
+    var isSelected=multiple?!!selectedMap[String(opt.value)] : opt.value===value;
+    h+='<option value="'+esc(opt.value)+'"'+(isSelected?' selected':'')+(opt.missing?' data-missing="1"':'')+'>'+esc(opt.label)+'</option>';
   });
   h+='</select></div>';
   if(emptyMessage&&options.length===0){
@@ -4612,10 +4672,13 @@ function _renderDiscordSelect(id,label,tipText,value,options,placeholder,onchang
   return h;
 }
 
-function _renderDiscordBindingPeerSection(chName, prefix, accName, guildId, peerId, isEdit){
+function _renderDiscordBindingPeerSection(chName, prefix, accName, guildId, peerId, isEdit, selectedTargets){
   var accountIds=_getDiscordBindingAccountIds(chName);
   var allowAny=accountIds.length>1 || accName==="*";
   var curAcc=accName==="*"?"":(accName||"");
+  var supportsScopedTargets=_bindingSupportsScopedTargets(chName);
+  var groupLabel=_bindingGroupLabel(chName);
+  var targetLabel=_bindingTargetLabel(chName);
   var h='';
 
   h+='<div class="fg">'+tip("Account","Which account to bind.")+'<select id="'+prefix+'acc" onchange="'+(isEdit?'onEditBindingAccChange(\''+esc(chName)+'\')':'onBindingAccChange(\''+esc(chName)+'\')')+'">';
@@ -4630,45 +4693,49 @@ function _renderDiscordBindingPeerSection(chName, prefix, accName, guildId, peer
   }
   h+='</select></div>';
 
-  if(chName==="discord"){
-    var guildOptions=_getDiscordGuildOptions(chName, curAcc||"*", guildId, isEdit);
-    var effectiveGuildId=guildId||(guildOptions.length===1?guildOptions[0].value:"");
-    var guildPlaceholder=guildOptions.length===1?null:"Select guild…";
-    var guildDisabled=guildOptions.length===0&&!(guildId&&guildId.length>0);
-    h+='<div class="binding-help">Exact Discord bindings auto-sync allowed channels on Apply & Restart. Any-account bindings stay manual.</div>';
+  if(supportsScopedTargets){
+    var groupOptions=_getDiscordGuildOptions(chName, curAcc||"*", guildId, isEdit);
+    var effectiveGroupId=guildId||(groupOptions.length===1?groupOptions[0].value:"");
+    var groupPlaceholder=groupOptions.length===1?null:(groupLabel==="Guild"?"Select guild…":"Select "+groupLabel.toLowerCase()+"…");
+    var groupDisabled=groupOptions.length===0&&!(guildId&&guildId.length>0);
+    h+='<div class="binding-help">'+esc(chName==="discord" ? "Exact Discord bindings auto-sync allowed channels on Apply & Restart. Any-account bindings stay manual." : "Pick one or more "+targetLabel.toLowerCase()+"s for this binding.")+'</div>';
     h+=_renderDiscordSelect(
       prefix+"guild-id",
-      "Guild",
-      "Discord server ID for this binding.",
-      effectiveGuildId,
-      guildOptions,
-      guildPlaceholder,
+      groupLabel,
+      (chName==="discord"?"Discord server ID for this binding.":groupLabel+" ID for this binding."),
+      effectiveGroupId,
+      groupOptions,
+      groupPlaceholder,
       (isEdit?'onEditBindingAccChange(\''+esc(chName)+'\')':'onBindingAccChange(\''+esc(chName)+'\')'),
       accountIds.length===0
-        ? "No configured Discord guilds for this account yet. Add guilds to the selected Discord account first."
-        : guildOptions.length===0
-          ? "No configured Discord guilds for the selected account."
+        ? "No configured "+groupLabel.toLowerCase()+"s for this account yet. Add them to the selected account first."
+        : groupOptions.length===0
+          ? "No configured "+groupLabel.toLowerCase()+"s for the selected account."
           : "",
-      guildDisabled
+      groupDisabled
     );
 
-    var channelOptions=_getDiscordChannelOptions(chName, curAcc||"*", effectiveGuildId||"", peerId, isEdit);
-    var channelPlaceholder=channelOptions.length===1?null:(effectiveGuildId?"Select channel…":"Select a guild first…");
-    var channelDisabled=!effectiveGuildId||channelOptions.length===0;
+    var currentTargetIds=isEdit ? [peerId||""] : (Array.isArray(selectedTargets)?selectedTargets.filter(function(v){return v!=="";}):_selectedValues(prefix+"peer-id"));
+    var targetOptions=_getDiscordChannelOptions(chName, curAcc||"*", effectiveGroupId||"", isEdit?peerId:(currentTargetIds[0]||""), isEdit);
+    var targetPlaceholder=isEdit ? null : (effectiveGroupId?null:"Select a "+groupLabel.toLowerCase()+" first…");
+    var targetDisabled=!effectiveGroupId||targetOptions.length===0;
+    if(!isEdit&&currentTargetIds.length===0&&targetOptions.length===1)currentTargetIds=[targetOptions[0].value];
     h+=_renderDiscordSelect(
       prefix+"peer-id",
-      "Discord Channel",
-      "Specific Discord channel ID to route.",
-      peerId||"",
-      channelOptions,
-      channelPlaceholder,
+      isEdit?targetLabel:(targetLabel+"s"),
+      (isEdit?"Specific "+targetLabel.toLowerCase()+" ID to route.":"Select one or more "+targetLabel.toLowerCase()+"s to route."),
+      isEdit?(peerId||""):"",
+      targetOptions,
+      targetPlaceholder,
       (isEdit?'onEditBindingAccChange(\''+esc(chName)+'\')':'onBindingAccChange(\''+esc(chName)+'\')'),
-      !guildId
-        ? "Select a guild to see its configured channels."
-        : channelOptions.length===0
-          ? "No configured channels for the selected guild."
+      !effectiveGroupId
+        ? "Select a "+groupLabel.toLowerCase()+" to see its configured channels."
+        : targetOptions.length===0
+          ? "No configured channels for the selected "+groupLabel.toLowerCase()+"."
           : "",
-      channelDisabled
+      targetDisabled,
+      !isEdit,
+      currentTargetIds
     );
   }else{
     h+='<div class="fg">'+tip("Peer Filter (optional)","Format: kind:id. Leave empty to match all.")
@@ -4713,8 +4780,8 @@ function showAddBindingModal(chName){
   if(resolvedCh)setTimeout(function(){onBindingAccChange(resolvedCh)},0);
 }
 
-function _buildBindingAccPeer(chName){
-  return _renderDiscordBindingPeerSection(chName, "ab-", V("ab-acc").trim(), V("ab-guild-id").trim(), V("ab-peer-id").trim(), false);
+function _buildBindingAccPeer(chName, selectedTargets){
+  return _renderDiscordBindingPeerSection(chName, "ab-", V("ab-acc").trim(), V("ab-guild-id").trim(), V("ab-peer-id").trim(), false, selectedTargets);
 }
 
 function onBindingChChange(){
@@ -4729,7 +4796,7 @@ function onBindingChChange(){
 function onBindingAccChange(chName){
   var container=Q("ab-dynamic");
   if(!container)return;
-  container.innerHTML=_buildBindingAccPeer(chName);
+  container.innerHTML=_buildBindingAccPeer(chName, _selectedValues("ab-peer-id"));
 }
 
 function doAddBinding(chName){
@@ -4738,14 +4805,27 @@ function doAddBinding(chName){
   var agentId=V("ab-agent");
   if(!agentId){toast("Select an agent","err");return}
   var acc=V("ab-acc").trim();
-  var guildId=V("ab-guild-id").trim();
+  var groupId=V("ab-guild-id").trim();
+  var groupField=_bindingGroupField(chName);
   var match={channel:chName};
   if(acc)match.accountId=acc;
-  if(guildId)match.guildId=guildId;
+  if(groupId&&groupField)match[groupField]=groupId;
 
-  if(chName==="discord"){
-    var peerId=V("ab-peer-id").trim();
-    if(peerId)match.peer={kind:"channel",id:peerId};
+  if(_bindingSupportsScopedTargets(chName)){
+    var peerIds=_selectedValues("ab-peer-id");
+    if(peerIds.length===0){toast("Select at least one target","err");return}
+    var nextBindings=(D.bindings||[]).slice();
+    peerIds.forEach(function(peerId){
+      var oneMatch={channel:chName};
+      if(acc)oneMatch.accountId=acc;
+      if(groupId&&groupField)oneMatch[groupField]=groupId;
+      oneMatch.peer={kind:"channel",id:peerId};
+      nextBindings.push({id:_bindingKey({agentId:agentId,match:oneMatch},nextBindings.length),agentId:agentId,match:oneMatch});
+    });
+    api(_deferParam("bindings"),{method:"PUT",body:JSON.stringify({bindings:nextBindings})}).then(function(){
+      toast("Binding added","ok");_deferRestart("Binding added");D.bindings=_normalizeBindings(nextBindings);closeModal();_refreshEffectiveUi();
+    }).catch(function(e){toast(e.message,"err")});
+    return;
   }else{
     var peerRaw=V("ab-peer-raw").trim();
     if(peerRaw&&peerRaw.indexOf(":")>-1){
@@ -4799,7 +4879,7 @@ function showEditBindingModal(bindingRef){
 }
 
 function _buildEditBindingAccPeer(chName,m){
-  return _renderDiscordBindingPeerSection(chName, "eb-", m.accountId||"", m.guildId||"", (m.peer&&m.peer.id)||"", true);
+  return _renderDiscordBindingPeerSection(chName, "eb-", m.accountId||"", m.guildId||m.teamId||m.groupId||"", (m.peer&&m.peer.id)||"", true);
 }
 
 function onEditBindingChChange(){
@@ -4825,12 +4905,13 @@ function doEditBinding(bindingRef){
   var agentId=V("eb-agent");
   if(!agentId){toast("Select an agent","err");return}
   var acc=V("eb-acc").trim();
-  var guildId=V("eb-guild-id").trim();
+  var groupId=V("eb-guild-id").trim();
+  var groupField=_bindingGroupField(chName);
   var match={channel:chName};
   if(acc)match.accountId=acc;
-  if(guildId)match.guildId=guildId;
+  if(groupId&&groupField)match[groupField]=groupId;
 
-  if(chName==="discord"){
+  if(_bindingSupportsScopedTargets(chName)){
     var peerId=V("eb-peer-id").trim();
     if(peerId)match.peer={kind:"channel",id:peerId};
   }else{

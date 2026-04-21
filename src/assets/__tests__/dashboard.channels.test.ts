@@ -14,7 +14,7 @@ function extractFunction(source: string, name: string, nextName: string): string
 
 describe("dashboard channels visibility", () => {
     function loadDiscordBindingHelpers(source: string, endMarker: string): string {
-        const start = source.indexOf("function _getDiscordBindingAccountIds(");
+        const start = source.indexOf("function _describeBindingRoute(");
         const end = source.indexOf(endMarker, start + 1);
         if (start < 0 || end < 0) throw new Error(`Unable to locate helpers before ${endMarker}`);
         return source.slice(start, end);
@@ -29,7 +29,7 @@ describe("dashboard channels visibility", () => {
         const ctx: any = {
             D: {
                 channels: {
-                    discord: { enabled: true, accounts: { default: { enabled: true } } },
+                    discord: { enabled: true, accounts: { default: { enabled: true, guilds: { "guild-1": { channels: { "chan-1": {}, "chan-2": {} } } } } } },
                 },
                 bindings: [
                     { agentId: "alpha", match: { channel: "discord", accountId: "default" } },
@@ -89,6 +89,7 @@ describe("dashboard channels visibility", () => {
                 },
             },
             V: (id: string) => values[id] || "",
+            Q: () => null,
             tip: (_label: string, body: string) => body,
             esc: (value: unknown) => String(value ?? ""),
         };
@@ -164,6 +165,7 @@ describe("dashboard channels visibility", () => {
                 },
             },
             V: (id: string) => values[id] || "",
+            Q: () => null,
             tip: (_label: string, body: string) => body,
             esc: (value: unknown) => String(value ?? ""),
         };
@@ -172,7 +174,7 @@ describe("dashboard channels visibility", () => {
         vm.runInNewContext(addPeerFn, ctx);
 
         const html = ctx._buildBindingAccPeer("discord");
-        expect(html).toContain("No configured Discord guilds for the selected account.");
+        expect(html).toContain("No configured guilds for the selected account.");
 
         ctx.D.channels.discord.accounts.default.guilds = { "guild-1": { channels: {} } };
         values["ab-guild-id"] = "guild-1";
@@ -180,7 +182,7 @@ describe("dashboard channels visibility", () => {
         expect(html2).toContain("No configured channels for the selected guild.");
     });
 
-    it("sends guild IDs when saving Discord bindings", () => {
+    it("sends one binding per selected Discord target", () => {
         const source = readFileSync(DASHBOARD_JS_PATH, "utf-8");
         const addFn = extractFunction(source, "doAddBinding", "showEditBindingModal");
         const editFn = extractFunction(source, "doEditBinding", "saveAccountConfig");
@@ -189,16 +191,24 @@ describe("dashboard channels visibility", () => {
             "ab-agent": "alpha",
             "ab-acc": "default",
             "ab-guild-id": "guild-1",
-            "ab-peer-id": "chan-1",
             "eb-agent": "alpha",
             "eb-acc": "default",
             "eb-ch": "discord",
             "eb-guild-id": "guild-2",
             "eb-peer-id": "chan-2",
         };
+        const peerSelect = {
+            multiple: true,
+            options: [
+                { value: "chan-1", selected: true },
+                { value: "chan-2", selected: true },
+                { value: "chan-3", selected: false },
+            ],
+        };
         const ctx: any = {
-            D: { bindings: [] },
+            D: { bindings: [], channels: { discord: { accounts: { default: { guilds: { "guild-1": { channels: { "chan-1": {}, "chan-2": {} } } } } } } } },
             V: (id: string) => values[id] || "",
+            Q: (id: string) => (id === "ab-peer-id" ? peerSelect : null),
             _bindingKey: (b: any, idx: number) => b.id || `binding-${idx}`,
             _bindingRefIndex: (ref: string) => ref === "bind-1" ? 0 : -1,
             api: (_url: string, opts: any) => { payloads.push(JSON.parse(opts.body)); return Promise.resolve({}); },
@@ -209,6 +219,8 @@ describe("dashboard channels visibility", () => {
             _refreshEffectiveUi: () => undefined,
         };
 
+        vm.runInNewContext(loadDiscordBindingHelpers(source, "function onBindingChChange()"), ctx);
+
         vm.runInNewContext(addFn, ctx);
         vm.runInNewContext(editFn, ctx);
 
@@ -217,11 +229,47 @@ describe("dashboard channels visibility", () => {
         ctx.doEditBinding("bind-1");
 
         expect(payloads[0].bindings[0].id).toBeTruthy();
+        expect(payloads[0].bindings).toHaveLength(2);
         expect(payloads[0].bindings[0].match.guildId).toBe("guild-1");
         expect(payloads[0].bindings[0].match.peer).toEqual({ kind: "channel", id: "chan-1" });
+        expect(payloads[0].bindings[1].match.guildId).toBe("guild-1");
+        expect(payloads[0].bindings[1].match.peer).toEqual({ kind: "channel", id: "chan-2" });
         expect(payloads[1].bindings[0].match.guildId).toBe("guild-2");
         expect(payloads[1].bindings[0].match.peer).toEqual({ kind: "channel", id: "chan-2" });
         expect(payloads[1].bindings[0].id).toBe("bind-1");
+    });
+
+    it("renders multi-target scoped bindings for Slack-style config", () => {
+        const source = readFileSync(DASHBOARD_JS_PATH, "utf-8");
+        const addPeerFn = loadDiscordBindingHelpers(source, "function onBindingChChange()");
+        const ctx: any = {
+            D: {
+                channels: {
+                    slack: {
+                        accounts: {
+                            default: {
+                                teams: {
+                                    "team-1": { channels: { "chan-a": { enabled: true }, "chan-b": { enabled: true } } },
+                                },
+                            },
+                        },
+                    },
+                },
+            },
+            V: (id: string) => values[id] || "",
+            Q: () => null,
+            tip: (_label: string, body: string) => body,
+            esc: (value: unknown) => String(value ?? ""),
+        };
+        const values: Record<string, string> = { "ab-acc": "default", "ab-guild-id": "team-1" };
+
+        vm.runInNewContext(addPeerFn, ctx);
+
+        const html = ctx._buildBindingAccPeer("slack");
+        expect(html).toContain("Team");
+        expect(html).toContain("multiple");
+        expect(html).toContain("chan-a");
+        expect(html).toContain("chan-b");
     });
 
     it("targets sibling bindings by stable id in the agent drawer", () => {
