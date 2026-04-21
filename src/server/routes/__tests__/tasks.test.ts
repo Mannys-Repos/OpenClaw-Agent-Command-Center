@@ -317,6 +317,7 @@ flow.runTask<{ status: string }>({ id: "step1", agentId: "alpha", input: {} });
         expect(res.statusCode).toBe(200);
         expect(res._body.flows.length).toBe(1);
         expect(res._body.flows[0].name).toBe("alpha_flow");
+        expect(res._body.flows[0].file).toBe("alpha_flow.flow.ts");
     });
 
     it("marks orphaned flow definitions instead of hiding them", async () => {

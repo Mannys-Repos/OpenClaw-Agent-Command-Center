@@ -1,4 +1,4 @@
-import { readFileSync, writeFileSync, existsSync, statSync, mkdirSync } from "node:fs";
+import { readFileSync, writeFileSync, existsSync, statSync, mkdirSync, rmSync } from "node:fs";
 import { readFile as readFileAsync } from "node:fs/promises";
 import { join } from "node:path";
 import { exec, execFile } from "node:child_process";
@@ -18,6 +18,7 @@ export const DASHBOARD_FLOWS_DIR = join(DASHBOARD_TASKS_DIR, "flows");
 export const DASHBOARD_FLOW_DEFS_DIR = join(DASHBOARD_FLOWS_DIR, "definitions");
 export const DASHBOARD_FLOW_STATE_DIR = join(DASHBOARD_FLOWS_DIR, "state");
 export const DASHBOARD_FLOW_HISTORY_DIR = join(DASHBOARD_FLOWS_DIR, "history");
+const SKILLS_CONFIG_PATH = join(DASHBOARD_CONFIG_DIR, "skills-config.json");
 
 export const WORKSPACE_MD_FILES = [
     "AGENTS.md", "SOUL.md", "USER.md", "IDENTITY.md",
@@ -133,6 +134,7 @@ export function writeConfig(config: any): void {
 let _pendingConfig: any | null = null;
 let _pendingChangeCount = 0;
 let _pendingDescriptions: string[] = [];
+let _pendingSkillsConfig: any | null = null;
 type PendingDestructiveOp = {
     kind: string;
     key: string;
@@ -148,6 +150,19 @@ type PendingDestructiveOp = {
 };
 let _pendingDestructiveOps: PendingDestructiveOp[] = [];
 
+type PendingSkillOp = {
+    kind: "skill";
+    key: string;
+    description: string;
+    action: "create" | "update" | "install" | "delete" | "toggle";
+    agentId: string;
+    dirName: string;
+    scope: string;
+    tempDir?: string;
+    apply: () => void;
+};
+let _pendingSkillOps: PendingSkillOp[] = [];
+
 type PendingDestructiveOpFailure = {
     key: string;
     description: string;
@@ -159,6 +174,81 @@ export function stageConfig(config: any, description?: string): void {
     _pendingConfig = config;
     _pendingChangeCount++;
     if (description) _pendingDescriptions.push(description);
+}
+
+export function stagePendingSkillsConfig(config: any): void {
+    _pendingSkillsConfig = JSON.parse(JSON.stringify(config));
+}
+
+export function getPendingSkillsConfig(): any | null {
+    return _pendingSkillsConfig === null ? null : JSON.parse(JSON.stringify(_pendingSkillsConfig));
+}
+
+export function discardPendingSkillsConfig(): void {
+    _pendingSkillsConfig = null;
+}
+
+function writeSkillsConfig(config: any): void {
+    if (!existsSync(DASHBOARD_CONFIG_DIR)) mkdirSync(DASHBOARD_CONFIG_DIR, { recursive: true });
+    writeFileSync(SKILLS_CONFIG_PATH, JSON.stringify(config, null, 2), "utf-8");
+}
+
+export function readEffectiveSkillsConfig(): any {
+    if (_pendingSkillsConfig !== null) return JSON.parse(JSON.stringify(_pendingSkillsConfig));
+    const raw = tryReadFile(join(DASHBOARD_CONFIG_DIR, "skills-config.json"));
+    if (raw === null) return {};
+    try { return JSON.parse(raw); } catch { return {}; }
+}
+
+export function stagePendingSkillOp(op: PendingSkillOp): void {
+    const idx = _pendingSkillOps.findIndex((item) => item.key === op.key);
+    if (idx >= 0) {
+        const prev = _pendingSkillOps[idx];
+        if (prev.tempDir && prev.tempDir !== op.tempDir) {
+            try { rmSync(prev.tempDir, { recursive: true, force: true }); } catch { }
+        }
+        _pendingSkillOps[idx] = op;
+    } else {
+        _pendingSkillOps.push(op);
+    }
+}
+
+export function getPendingSkillOps(): { kind: "skill"; key: string; description: string; action: PendingSkillOp["action"]; agentId: string; dirName: string; scope: string; tempDir?: string }[] {
+    return _pendingSkillOps.map(({ kind, key, description, action, agentId, dirName, scope, tempDir }) => ({ kind, key, description, action, agentId, dirName, scope, tempDir }));
+}
+
+export function commitPendingSkillOps(): { applied: number; failed: { key: string; description: string; error: string }[] } {
+    let applied = 0;
+    const failed: { key: string; description: string; error: string }[] = [];
+    const remaining: PendingSkillOp[] = [];
+    for (const op of _pendingSkillOps) {
+        try {
+            op.apply();
+            applied++;
+            if (op.tempDir) {
+                try { rmSync(op.tempDir, { recursive: true, force: true }); } catch { }
+            }
+        } catch (err) {
+            console.error("[agent-dashboard] Failed to apply staged skill op:", op.key, err);
+            failed.push({
+                key: op.key,
+                description: op.description,
+                error: err instanceof Error ? err.message : String(err),
+            });
+            remaining.push(op);
+        }
+    }
+    _pendingSkillOps = remaining;
+    return { applied, failed };
+}
+
+export function discardPendingSkillOps(): void {
+    for (const op of _pendingSkillOps) {
+        if (op.tempDir) {
+            try { rmSync(op.tempDir, { recursive: true, force: true }); } catch { }
+        }
+    }
+    _pendingSkillOps = [];
 }
 
 /** Commit the staged config to disk (triggers gateway restart). Returns false if nothing staged. */
@@ -236,31 +326,44 @@ export function getPendingConfig(): { config: any; changeCount: number; descript
 }
 
 export function getPendingChangeCount(): number {
-    return _pendingChangeCount + _pendingDestructiveOps.length;
+    return _pendingChangeCount + _pendingDestructiveOps.length + _pendingSkillOps.length + (_pendingSkillsConfig !== null && _pendingSkillOps.length === 0 ? 1 : 0);
 }
 
 export function getPendingChangeDescriptions(): string[] {
-    return [..._pendingDescriptions, ..._pendingDestructiveOps.map((op) => op.description)];
+    return [
+        ..._pendingDescriptions,
+        ..._pendingDestructiveOps.map((op) => op.description),
+        ..._pendingSkillOps.map((op) => op.description),
+        ...(_pendingSkillsConfig !== null && _pendingSkillOps.length === 0 ? ["Skill settings updated"] : []),
+    ];
 }
 
 export function hasPendingChanges(): boolean {
-    return _pendingConfig !== null || _pendingDestructiveOps.length > 0;
+    return _pendingConfig !== null || _pendingDestructiveOps.length > 0 || _pendingSkillOps.length > 0 || _pendingSkillsConfig !== null;
 }
 
-export function commitPendingChanges(): { committed: boolean; configWritten: boolean; destructiveOpFailures: PendingDestructiveOpFailure[] } {
-    if (!hasPendingChanges()) return { committed: false, configWritten: false, destructiveOpFailures: [] };
+export function commitPendingChanges(): { committed: boolean; configWritten: boolean; skillsConfigWritten: boolean; destructiveOpFailures: PendingDestructiveOpFailure[] } {
+    if (!hasPendingChanges()) return { committed: false, configWritten: false, skillsConfigWritten: false, destructiveOpFailures: [] };
     const configWritten = _pendingConfig !== null;
     if (_pendingConfig !== null) writeConfig(_pendingConfig);
+    const skillsConfigWritten = _pendingSkillsConfig !== null;
+    const skillResult = commitPendingSkillOps();
     const destructiveOpResult = commitPendingDestructiveOps();
+    if (_pendingSkillsConfig !== null) {
+        writeSkillsConfig(_pendingSkillsConfig);
+        _pendingSkillsConfig = null;
+    }
     _pendingConfig = null;
     _pendingChangeCount = 0;
     _pendingDescriptions = [];
-    return { committed: true, configWritten, destructiveOpFailures: destructiveOpResult.failed };
+    return { committed: true, configWritten, skillsConfigWritten, destructiveOpFailures: [...skillResult.failed, ...destructiveOpResult.failed] };
 }
 
 export function discardPendingChanges(): void {
     discardPendingConfig();
     discardPendingDestructiveOps();
+    discardPendingSkillOps();
+    discardPendingSkillsConfig();
 }
 
 /**

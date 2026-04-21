@@ -18,6 +18,7 @@ vi.mock("../../api-utils.js", () => ({
     commitPendingChanges: vi.fn(() => ({ committed: false, destructiveOpFailures: [] })),
     discardPendingChanges: vi.fn(),
     getPendingConfig: vi.fn(() => mockPendingConfig ? JSON.parse(JSON.stringify(mockPendingConfig)) : null),
+    getPendingSkillOps: vi.fn(() => []),
     getPendingDestructiveOps: vi.fn(() => JSON.parse(JSON.stringify(mockPendingDestructiveOps))),
     getPendingChangeCount: vi.fn(() => (mockPendingConfig ? 1 : 0) + mockPendingDestructiveOps.length),
     getPendingChangeDescriptions: vi.fn(() => ["staged config", ...mockPendingDestructiveOps.map((op) => op.description)]),
@@ -96,5 +97,24 @@ describe("config routes", () => {
         expect(res._body.configWritten).toBe(true);
         expect(res._body.destructiveOpFailures).toHaveLength(1);
         expect(res._body.error).toMatch(/Config was saved/);
+    });
+
+    it("re-syncs skills when committed managed toggles were staged", async () => {
+        const { commitPendingChanges } = await import("../../api-utils.js");
+        (commitPendingChanges as any).mockReturnValue({
+            committed: true,
+            configWritten: false,
+            skillsConfigWritten: true,
+            destructiveOpFailures: [],
+        });
+
+        const req = mockReq("POST");
+        const res = mockRes();
+        const handled = await handleConfigRoutes(req, res, new URL("http://localhost/api/config/commit"), "/config/commit");
+
+        expect(handled).toBe(true);
+        expect(res.statusCode).toBe(200);
+        expect(syncSkillsToAllWorkspaces).toHaveBeenCalledWith(expect.objectContaining(mockConfig));
+        expect(res._body.skillsConfigWritten).toBe(true);
     });
 });

@@ -10,6 +10,7 @@ import {
     commitPendingChanges,
     discardPendingChanges,
     getPendingConfig,
+    getPendingSkillOps,
     getPendingDestructiveOps,
     getPendingChangeCount,
     getPendingChangeDescriptions,
@@ -113,11 +114,15 @@ export async function handleConfigRoutes(
             json(res, 200, { ok: false, committed: false, configWritten: false, error: "No pending changes to commit" });
             return true;
         }
+        if (result.skillsConfigWritten) {
+            syncSkillsToAllWorkspaces(readConfig());
+        }
         if (result.destructiveOpFailures.length > 0) {
             json(res, 200, {
                 ok: false,
                 committed: true,
                 configWritten: result.configWritten,
+                skillsConfigWritten: result.skillsConfigWritten,
                 error: result.configWritten
                     ? "Config was saved, but some destructive operations failed"
                     : "Failed to apply staged destructive operations",
@@ -126,15 +131,16 @@ export async function handleConfigRoutes(
             });
             return true;
         }
-        json(res, 200, { ok: true, committed: true, configWritten: result.configWritten });
+        json(res, 200, { ok: true, committed: true, configWritten: result.configWritten, skillsConfigWritten: result.skillsConfigWritten });
         return true;
     }
 
     // ─── DELETE /api/config/pending — discard staged changes ───
     if (path === "/config/pending" && method === "DELETE") {
         const pendingDestructiveOps = getPendingDestructiveOps();
+        const pendingSkillOps = getPendingSkillOps();
         discardPendingChanges();
-        if (pendingDestructiveOps.some((op) => op.kind === "skill")) {
+        if (pendingDestructiveOps.some((op) => op.kind === "skill") || pendingSkillOps.length > 0) {
             syncSkillsToAllWorkspaces(readConfig());
         }
         json(res, 200, { ok: true });
