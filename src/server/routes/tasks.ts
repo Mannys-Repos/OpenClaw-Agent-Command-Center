@@ -274,7 +274,7 @@ function enrichCronRunWithSession(jobId: string, run: NormalizedCronRun): Normal
 
 function readCronRunRecords(jobId: string): NormalizedCronRun[] {
     const records = readCronRunsFile(jobId);
-    return records.map((record, index) => enrichCronRunWithSession(jobId, normalizeCronRun(jobId, record, index)));
+    return records.reverse().map((record, index) => enrichCronRunWithSession(jobId, normalizeCronRun(jobId, record, index)));
 }
 
 function findCronRun(jobId: string, runId: string): NormalizedCronRun | null {
