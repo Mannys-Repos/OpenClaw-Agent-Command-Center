@@ -70,6 +70,16 @@ function getManagedSkillStatus(skillsCfg: any, dirName: string): { enabledState:
     };
 }
 
+function applyPendingSkillState(skill: any, pendingOp: { action: string; description?: string } | null): any {
+    if (!pendingOp) return skill;
+    return {
+        ...skill,
+        pending: true,
+        pendingAction: pendingOp.action,
+        pendingDescription: pendingOp.description || "",
+    };
+}
+
 function setGlobalManagedSkillEnabled(skillsCfg: any, dirName: string, enabled: boolean): void {
     if (!skillsCfg[GLOBAL_MANAGED_SKILLS_KEY]) skillsCfg[GLOBAL_MANAGED_SKILLS_KEY] = {};
     skillsCfg[GLOBAL_MANAGED_SKILLS_KEY][dirName] = { enabled };
@@ -264,7 +274,6 @@ function scanSkillsDir(dir: string, tier: string, agentId?: string): any[] {
     try {
         for (const entry of readdirSync(dir)) {
             const pendingOp = pending.find((op) => op.dirName === entry && op.scope === tier && (tier === "managed" || op.agentId === agentId || op.agentId === "__global__"));
-            if (pendingOp?.action === "delete") continue;
             const skillDir = pendingOp?.tempDir || join(dir, entry);
             try { if (!statSync(skillDir).isDirectory()) continue; } catch { continue; }
             const skillMdPath = join(skillDir, "SKILL.md");
@@ -278,7 +287,7 @@ function scanSkillsDir(dir: string, tier: string, agentId?: string): any[] {
                 } catch { }
             }
             const ocMeta = parsed.metadata?.openclaw || {};
-            skills.push({
+            skills.push(applyPendingSkillState({
                 dirName: entry,
                 name: parsed.name || entry,
                 description: parsed.description || "",
@@ -289,12 +298,11 @@ function scanSkillsDir(dir: string, tier: string, agentId?: string): any[] {
                     bins: ocMeta.requires?.bins || [],
                     env: ocMeta.requires?.env || [],
                 },
-            });
+            }, pendingOp || null));
         }
     } catch { }
     for (const op of pending) {
         if (op.scope !== tier || (tier !== "managed" && op.agentId !== agentId && op.agentId !== "__global__")) continue;
-        if (op.action === "delete") continue;
         if (skills.some((s) => s.dirName === op.dirName)) continue;
         const skillDir = op.tempDir;
         if (!skillDir) continue;
@@ -304,7 +312,7 @@ function scanSkillsDir(dir: string, tier: string, agentId?: string): any[] {
             const content = readFileSync(skillMdPath, "utf-8");
             const parsed = parseSkillMd(content);
             const ocMeta = parsed.metadata?.openclaw || {};
-            skills.push({
+            skills.push(applyPendingSkillState({
                 dirName: op.dirName,
                 name: parsed.name || op.dirName,
                 description: parsed.description || "",
@@ -315,7 +323,7 @@ function scanSkillsDir(dir: string, tier: string, agentId?: string): any[] {
                     bins: ocMeta.requires?.bins || [],
                     env: ocMeta.requires?.env || [],
                 },
-            });
+            }, op));
         } catch { }
     }
     return skills;

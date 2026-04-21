@@ -1950,18 +1950,19 @@ function renderSkillsSection(a){
 
 function _renderSkillCard(skill,agent){
   var disabled=!skill.enabled;
-  var cls="skill-card"+(disabled?" skill-disabled":"")+(skill.shadowed?" skill-shadowed":"");
+  var cls="skill-card"+(disabled?" skill-disabled":"")+(skill.shadowed?" skill-shadowed":"")+(skill.pending?" skill-pending":"");
   var tierLabel=skill.tier==="workspace"?"Agent":(skill.tier==="managed"?"Global":"Bundled");
   var badgeCls="skill-badge skill-badge-"+skill.tier;
   var emoji=skill.emoji?'<span class="skill-emoji">'+esc(skill.emoji)+'</span>':'';
   var warning=!skill.hasValidSkillMd?'<span class="skill-warning" title="No valid SKILL.md">⚠</span>':'';
   var shadow=skill.shadowed?'<span class="skill-shadow-note">overridden</span>':'';
+  var pending=skill.pending?'<span class="skill-state skill-state-pending">'+esc(skill.pendingAction==="delete"?"Pending delete":"Pending apply")+'</span>':'';
   var h='<div class="'+cls+'">';
   h+='<div class="skill-card-row">';
   h+='<div class="skill-card-info">';
   h+=emoji+'<span class="skill-name">'+esc(skill.name||skill.dirName)+'</span>';
   h+='<span class="'+badgeCls+'">'+tierLabel+'</span>';
-  h+=warning+shadow;
+  h+=warning+shadow+pending;
   if(skill.description){h+='<div class="skill-desc">'+esc(skill.description)+'</div>'}
   h+='</div>';
   h+='<div class="skill-card-actions" onclick="event.stopPropagation()">';
@@ -1969,7 +1970,7 @@ function _renderSkillCard(skill,agent){
   if(skill.tier!=="bundled"){
     h+='<button class="skill-action-btn skill-action-danger" onclick="deleteSkill(\''+esc(agent.id)+'\',\''+esc(skill.dirName)+'\',\''+esc(skill.tier)+'\')" title="Delete">Delete</button>';
   }
-  h+='<label class="skill-toggle"><input type="checkbox"'+(skill.enabled?' checked':'')+' onchange="toggleSkill(\''+esc(agent.id)+'\',\''+esc(skill.dirName)+'\',this.checked)"><span class="skill-toggle-slider"></span></label>';
+  h+='<label class="skill-toggle"><input type="checkbox"'+(skill.enabled?' checked':'')+' onchange="toggleSkill(\''+esc(agent.id)+'\',\''+esc(skill.dirName)+'\',this.checked'+(skill.tier==="managed"?',\'managed\'':'')+')"><span class="skill-toggle-slider"></span></label>';
   h+='</div></div></div>';
   return h;
 }
@@ -8014,17 +8015,18 @@ function _getGlobalSkillState(skill){
 
 function _renderGlobalSkillCard(skill){
   var state=_getGlobalSkillState(skill);
-  var cls="skill-card"+(state.state==="disabled"?" skill-disabled":"")+(state.state==="partial"?" skill-partial":"");
+  var cls="skill-card"+(state.state==="disabled"?" skill-disabled":"")+(state.state==="partial"?" skill-partial":"")+(skill.pending?" skill-pending":"");
   var badgeCls="skill-badge skill-badge-"+skill.tier;
   var emoji=skill.emoji?'<span class="skill-emoji">'+esc(skill.emoji)+'</span>':'';
   var warning=!skill.hasValidSkillMd?'<span class="skill-warning" title="No valid SKILL.md">⚠</span>':'';
+  var pending=skill.pending?'<span class="skill-state skill-state-pending">'+esc(skill.pendingAction==="delete"?"Pending delete":"Pending apply")+'</span>':'';
   var h='<div class="'+cls+'">';
   h+='<div class="skill-card-row">';
   h+='<div class="skill-card-info">';
   h+=emoji+'<span class="skill-name">'+esc(skill.name||skill.dirName)+'</span>';
   h+='<span class="'+badgeCls+'">'+(skill.tier==="managed"?"Global":"Bundled")+'</span>';
   h+='<span class="skill-state skill-state-'+state.state+'">'+esc(state.label)+'</span>';
-  h+=warning;
+  h+=warning+pending;
   if(skill.description){h+='<div class="skill-desc">'+esc(skill.description)+'</div>'}
   h+='</div>';
   h+='<div class="skill-card-actions" onclick="event.stopPropagation()">';

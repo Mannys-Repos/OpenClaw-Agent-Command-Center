@@ -43,3 +43,31 @@ describe("global skills state labels", () => {
         expect(partialHtml).toContain("skill-partial");
     });
 });
+
+describe("drawer skill cards", () => {
+    it("marks pending skill changes and keeps managed toggles scoped globally", () => {
+        const source = readFileSync(DASHBOARD_JS_PATH, "utf-8");
+        const cardFn = extractFunction(source, "_renderSkillCard", "openSkillEditor");
+
+        const ctx: any = {
+            esc: (value: unknown) => String(value ?? ""),
+        };
+
+        vm.runInNewContext(cardFn, ctx);
+
+        const html = ctx._renderSkillCard({
+            dirName: "shared-skill",
+            name: "Shared Skill",
+            tier: "managed",
+            enabled: true,
+            pending: true,
+            pendingAction: "update",
+            hasValidSkillMd: true,
+            description: "Shared",
+        }, { id: "alpha" });
+
+        expect(html).toContain("skill-pending");
+        expect(html).toContain("Pending apply");
+        expect(html).toContain("toggleSkill('alpha','shared-skill',this.checked,'managed')");
+    });
+});

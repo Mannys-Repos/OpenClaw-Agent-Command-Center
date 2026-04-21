@@ -513,6 +513,8 @@ describe("skills routes — deferred staged changes", () => {
         const listRes = mockRes();
         await handleSkillRoutes(listReq, listRes, new URL("http://localhost/api/skills"), "/skills");
         expect(listRes._body.skills.find((s: any) => s.dirName === "shared-skill")?.enabled).toBe(false);
+        expect(listRes._body.skills.find((s: any) => s.dirName === "shared-skill")?.pending).toBe(true);
+        expect(listRes._body.skills.find((s: any) => s.dirName === "shared-skill")?.pendingAction).toBe("toggle");
     });
 
     it("stages agent-scoped toggles only for that agent", async () => {
@@ -588,4 +590,5 @@ describe("skills routes — deferred staged changes", () => {
         await handleSkillRoutes(readReq, readRes, new URL("http://localhost/api/skills/main/helper?scope=workspace"), "/skills/main/helper");
         expect(readRes.statusCode).toBe(404);
     });
+
 });
