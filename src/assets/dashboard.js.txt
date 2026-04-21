@@ -238,6 +238,88 @@ function getToolDeny(a){return(a.tools&&a.tools.deny)||[]}
 function Q(id){return document.getElementById(id)}
 function V(id){var e=Q(id);return e?e.value:""}
 function CK(id){var e=Q(id);return e?e.checked:false}
+var _bindingIdCache={};
+function _hashText(text){
+  var h=5381;
+  for(var i=0;i<text.length;i++){h=((h<<5)+h+text.charCodeAt(i))>>>0}
+  return h.toString(36);
+}
+function _bindingSignature(binding){
+  var m=(binding&&binding.match)||{};
+  var peer=m.peer||{};
+  return JSON.stringify({
+    agentId:(binding&&binding.agentId)||"",
+    match:{
+      channel:m.channel||"",
+      accountId:m.accountId||"",
+      guildId:m.guildId||"",
+      teamId:m.teamId||"",
+      userId:m.userId||"",
+      threadId:m.threadId||"",
+      peer:peer&&((peer.kind||peer.id)?{kind:peer.kind||"",id:peer.id||""}:null)
+    }
+  });
+}
+function _bindingKey(binding,idx){
+  var id=binding&&binding.id?String(binding.id).trim():"";
+  if(id)return id;
+  return "binding-"+_hashText(_bindingSignature(binding)+"|"+String(idx||0));
+}
+function _normalizeBindings(bindings){
+  var list=Array.isArray(bindings)?bindings:[];
+  var nextCache={};
+  var usedIds={};
+  var usedBySig={};
+  var out=list.map(function(b,idx){
+    var copy=JSON.parse(JSON.stringify(b||{}));
+    if(!copy||typeof copy!=="object")copy={};
+    var sig=_bindingSignature(copy);
+    var id=copy.id&&String(copy.id).trim();
+    if(id&&usedIds[id])id="";
+    if(!id){
+      var cacheList=_bindingIdCache[sig]||[];
+      var sigIdx=usedBySig[sig]||0;
+      id=cacheList[sigIdx]||_bindingKey(copy,idx);
+      usedBySig[sig]=sigIdx+1;
+    }
+    while(usedIds[id]){
+      id=_bindingKey(copy,idx)+"-"+_hashText(sig+"|"+idx+"|"+Object.keys(usedIds).length);
+    }
+    copy.id=id;
+    usedIds[id]=true;
+    if(!nextCache[sig])nextCache[sig]=[];
+    nextCache[sig].push(id);
+    return copy;
+  });
+  _bindingIdCache=nextCache;
+  return out;
+}
+function _bindingRefIndex(bindingRef){
+  var bindings=D.bindings||[];
+  if(bindingRef===null||bindingRef===undefined)return -1;
+  if(typeof bindingRef==="number"&&bindingRef>=0&&bindingRef<bindings.length)return bindingRef;
+  var ref=String(bindingRef);
+  if(/^\d+$/.test(ref)){
+    var refIdx=parseInt(ref,10);
+    if(refIdx>=0&&refIdx<bindings.length)return refIdx;
+  }
+  for(var i=0;i<bindings.length;i++){
+    var b=bindings[i];
+    if(!b)continue;
+    if(b.id&&String(b.id)===ref)return i;
+    if(_bindingKey(b,i)===ref)return i;
+  }
+  return -1;
+}
+function _bindingCountForAgent(agentId){
+  return (D.bindings||[]).filter(function(b){return b&&b.agentId===agentId}).length;
+}
+function _bindingCountForAgentChannel(agentId,chName){
+  return (D.bindings||[]).filter(function(b){return b&&b.agentId===agentId&&b.match&&b.match.channel===chName}).length;
+}
+function _bindingCountLabel(count){
+  return count===1?"1 binding":count+" bindings";
+}
 function agentColor(agentId){
   var ids=(D.agents||[]).map(function(a){return a.id});
   var idx=ids.indexOf(agentId);
@@ -591,7 +673,7 @@ function _getVisibleChannels(){
 }
 
 function _setEffectiveBindings(bindings){
-  D.bindings=bindings||[];
+  D.bindings=_normalizeBindings(bindings||[]);
 }
 
 var _initialLoadDone=false;
@@ -605,6 +687,7 @@ function load(opts){
     if(myGen!==_loadGen)return; // stale response — newer load already in flight
     D=d;
     if(!D.channels)D.channels=(D.config&&D.config.channels)||{};
+    D.bindings=_normalizeBindings(d.bindings||((d.config&&d.config.bindings)||[]));
     _initialLoadDone=true;
     _enableNav();
     // Check for model limit errors in gateway status
@@ -762,7 +845,8 @@ function renderAgentList(){
     h+='<span class="agent-list-icon">'+icon+'</span>';
     h+='<div class="agent-list-info">';
     h+='<div class="agent-list-name">'+esc(a.name||a.id)+'</div>';
-    h+='<div class="agent-list-meta">'+(model?esc(model):'no model')+(a["default"]?' · default':'')+'</div>';
+    var bindingCount=_bindingCountForAgent(a.id);
+    h+='<div class="agent-list-meta">'+(model?esc(model):'no model')+(a["default"]?' · default':'')+(bindingCount>0?' · '+_bindingCountLabel(bindingCount):'')+'</div>';
     h+='</div>';
     if(isPeer){
       h+='<div class="agent-list-dot peer" title="A2A Peer"></div>';
@@ -1345,10 +1429,13 @@ function drawRelMap(){
   // Build agent → channel map for badges
   var CH_ICONS={whatsapp:"💬",telegram:"✈️",discord:"🎮",slack:"💼",signal:"🔒",matrix:"🔷",webchat:"🌐",irc:"📡"};
   var agentChannels={};
+  var agentChannelCounts={};
   (D.bindings||[]).forEach(function(b){
     if(!b.agentId||!b.match||!b.match.channel)return;
     if(!agentChannels[b.agentId])agentChannels[b.agentId]={};
+    if(!agentChannelCounts[b.agentId])agentChannelCounts[b.agentId]={};
     agentChannels[b.agentId][b.match.channel]=true;
+    agentChannelCounts[b.agentId][b.match.channel]=(agentChannelCounts[b.agentId][b.match.channel]||0)+1;
   });
 
     // Agent nodes
@@ -1373,7 +1460,8 @@ function drawRelMap(){
       var chNames=Object.keys(chMap);
       html+='<div class="rn-channels">';
       chNames.forEach(function(ch){
-        html+='<span class="rn-ch-badge">'+(CH_ICONS[ch]||"📡")+' '+esc(ch)+'</span>';
+        var count=(agentChannelCounts[a.id]&&agentChannelCounts[a.id][ch])||1;
+        html+='<span class="rn-ch-badge">'+(CH_ICONS[ch]||"📡")+' '+esc(ch)+(count>1?' ×'+count:'')+'</span>';
       });
       html+='</div>';
     }
@@ -1498,8 +1586,9 @@ function renderDrawer(){
   var h='<div class="drawer-head" style="border-top:3px solid '+col+'">';
   h+='<div class="drawer-head-info">';
   h+='<div class="drawer-head-icon">'+agentIcon(a)+'</div>';
+  var bindingCount=_bindingCountForAgent(a.id);
   h+='<div><div class="drawer-head-name">'+esc(a.name||a.id)+'</div>';
-  h+='<div class="drawer-head-id">'+esc(a.id)+'</div></div></div>';
+  h+='<div class="drawer-head-id">'+esc(a.id)+(bindingCount>0?' · '+esc(_bindingCountLabel(bindingCount)):'')+'</div></div></div>';
   h+='<button class="close-btn" onclick="closeDrawer()">×</button></div>';
   h+='<div class="drawer-tabs">';
   var TAB_LABELS={tools:"Tools / Skills"};
@@ -2517,7 +2606,7 @@ var CH_ACCOUNT_FIELDS={
 // ── Channels Tab (agent drawer — simplified, just shows bindings for this agent) ──
 function renderChannels(a){
   var bindings=(D.bindings||[]).filter(function(b){return b.agentId===a.id});
-  var h='<div class="binding-help">Bindings for this agent. Manage channels globally from the <a href="#" class="text-link-accent" onclick="event.preventDefault();closeDrawer();showChannelsPage()">Channels</a> page.</div>';
+  var h='<div class="binding-help">Bindings for this agent'+(bindings.length>0?' · '+_bindingCountLabel(bindings.length):'')+'. Manage channels globally from the <a href="#" class="text-link-accent" onclick="event.preventDefault();closeDrawer();showChannelsPage()">Channels</a> page.</div>';
   if(bindings.length===0){
     h+='<div class="ch-int-empty center">No bindings for this agent.<br><br><button class="btn btn-accent btn-sm" onclick="closeDrawer();showChannelsPage()">Go to Channels</button></div>';
     return h;
@@ -2527,14 +2616,14 @@ function renderChannels(a){
     var m=b.match||{};
     var peer=m.peer?(m.peer.kind+":"+m.peer.id):"any peer";
     var acc=m.accountId||"default";
+    var bindingKey=_bindingKey(b,D.bindings.indexOf(b)>=0?D.bindings.indexOf(b):i);
     h+='<div class="binding-row">';
     h+='<span class="binding-icon">'+chIcon(m.channel||"")+'</span>';
     h+='<span class="badge badge-blue">'+esc(m.channel||"*")+'</span>';
     h+='<span class="binding-account">'+esc(acc)+'</span>';
     h+='<span class="binding-peer">'+esc(peer)+'</span>';
-    var drawerGi=-1;for(var j=0;j<(D.bindings||[]).length;j++){var db=D.bindings[j];if(db.agentId===a.id&&db.match&&db.match.channel===(m.channel||"")&&(db.match.accountId||"")===(m.accountId||"")&&JSON.stringify(db.match.peer||null)===JSON.stringify(m.peer||null)){drawerGi=j;break}}
-    h+='<button class="btn btn-sm binding-edit-btn" onclick="showEditBindingModal('+drawerGi+')" title="Edit binding">Edit</button>';
-    h+='<button class="btn btn-sm btn-danger" onclick="removeBinding(\''+esc(a.id)+'\','+i+')">Remove</button>';
+    h+='<button class="btn btn-sm binding-edit-btn" onclick="showEditBindingModal(\''+esc(bindingKey)+'\')" title="Edit binding">Edit</button>';
+    h+='<button class="btn btn-sm btn-danger" onclick="removeBinding(\''+esc(a.id)+'\',\''+esc(bindingKey)+'\')">Remove</button>';
     h+='</div>';
   });
   h+='</div>';
@@ -2547,15 +2636,16 @@ function addBinding(agentId){
   var match={channel:ch};
   if(acc)match.accountId=acc;
   if(peerRaw&&peerRaw.indexOf(":")>-1){var parts=peerRaw.split(":");match.peer={kind:parts[0],id:parts.slice(1).join(":")}}
-  var all=(D.bindings||[]).concat([{agentId:agentId,match:match}]);
-  api(_deferParam("bindings"),{method:"PUT",body:JSON.stringify({bindings:all})}).then(function(){toast("Routing rule added","ok");_deferRestart("Routing rule added");D.bindings=all;_refreshEffectiveUi()}).catch(function(e){toast(e.message,"err")});
+  var all=(D.bindings||[]).concat([{id:_bindingKey({agentId:agentId,match:match},(D.bindings||[]).length),agentId:agentId,match:match}]);
+  api(_deferParam("bindings"),{method:"PUT",body:JSON.stringify({bindings:all})}).then(function(){toast("Routing rule added","ok");_deferRestart("Routing rule added");D.bindings=_normalizeBindings(all);_refreshEffectiveUi()}).catch(function(e){toast(e.message,"err")});
 }
-function removeBinding(agentId,index){
-  var ab=(D.bindings||[]).filter(function(b){return b.agentId===agentId});
-  var target=ab[index];if(!target)return;
-  var gi=D.bindings.indexOf(target);if(gi<0)return;
+function removeBinding(agentId,bindingRef){
+  var gi=_bindingRefIndex(bindingRef);
+  if(gi<0)return;
+  var target=D.bindings[gi];
+  if(!target||target.agentId!==agentId)return;
   var all=D.bindings.slice();all.splice(gi,1);
-  api(_deferParam("bindings"),{method:"PUT",body:JSON.stringify({bindings:all})}).then(function(){toast("Rule removed","ok");_deferRestart("Routing rule removed");D.bindings=all;_refreshEffectiveUi()}).catch(function(e){toast(e.message,"err")});
+  api(_deferParam("bindings"),{method:"PUT",body:JSON.stringify({bindings:all})}).then(function(){toast("Rule removed","ok");_deferRestart("Routing rule removed");D.bindings=_normalizeBindings(all);_refreshEffectiveUi()}).catch(function(e){toast(e.message,"err")});
 }
 
 // ── Sessions Tab ──
@@ -3917,7 +4007,6 @@ function renderChannelsPage(){
   }
 
   // Build flat list of account cards across all channels
-  var usedBindingIdx={};
   h+='<div class="ch-grid">';
   chNames.forEach(function(ch){
     var cfg=allCh[ch]||{};
@@ -3939,7 +4028,7 @@ function renderChannelsPage(){
       h+='<div class="ch-card-body">';
       if(chBindings.length>0){
         h+='<div>';
-        h+='<div class="ch-card-section-title">Bindings</div>';
+        h+='<div class="ch-card-section-title">Bindings ('+chBindings.length+')</div>';
         h+='<div class="flex-col" style="gap:6px">';
         chBindings.forEach(function(b){
           var aid=b.agentId||"?";
@@ -3947,14 +4036,14 @@ function renderChannelsPage(){
           var m=b.match||{};
           var route="";
            route=_describeBindingRoute(m);
-          var gi=-1;for(var j=0;j<bindings.length;j++){if(bindings[j]===b){gi=j;usedBindingIdx[gi]=true;break}}
-          h+='<div class="ch-card-binding" onclick="showEditBindingModal('+gi+')" style="cursor:pointer">';
+          var bindingKey=_bindingKey(b,bindings.indexOf(b)>=0?bindings.indexOf(b):0);
+          h+='<div class="ch-card-binding" onclick="showEditBindingModal(\''+esc(bindingKey)+'\')" style="cursor:pointer">';
           h+='<span class="ch-card-binding-arrow">→</span>';
           h+='<span class="ch-card-binding-agent" style="color:'+col+'">'+esc(aid)+'</span>';
           h+='<span class="ch-card-binding-route">'+esc(route)+'</span>';
           h+='<span class="ch-card-binding-actions">';
-          h+='<span onclick="event.stopPropagation();showEditBindingModal('+gi+')" title="Edit">Edit</span>';
-          h+='<span onclick="event.stopPropagation();removeBindingGlobal('+gi+')" title="Remove">Remove</span>';
+          h+='<span onclick="event.stopPropagation();showEditBindingModal(\''+esc(bindingKey)+'\')" title="Edit">Edit</span>';
+          h+='<span onclick="event.stopPropagation();removeBindingGlobal(\''+esc(bindingKey)+'\')" title="Remove">Remove</span>';
           h+='</span></div>';
         });
         h+='</div></div>';
@@ -4002,7 +4091,7 @@ function renderChannelsPage(){
       // Bindings for this account
       if(accBindings.length>0){
         h+='<div>';
-        h+='<div class="ch-card-section-title">Bindings</div>';
+        h+='<div class="ch-card-section-title">Bindings ('+accBindings.length+')</div>';
         h+='<div class="flex-col" style="gap:6px">';
         accBindings.forEach(function(b){
           var aid=b.agentId||"?";
@@ -4010,16 +4099,15 @@ function renderChannelsPage(){
           var m=b.match||{};
           var route="";
            route=_describeBindingRoute(m);
-          // Find global index
-          var gi=-1;for(var j=0;j<bindings.length;j++){if(bindings[j]===b){gi=j;usedBindingIdx[gi]=true;break}}
+          var bindingKey=_bindingKey(b,bindings.indexOf(b)>=0?bindings.indexOf(b):0);
 
-          h+='<div class="ch-card-binding" onclick="showEditBindingModal('+gi+')" style="cursor:pointer">';
+          h+='<div class="ch-card-binding" onclick="showEditBindingModal(\''+esc(bindingKey)+'\')" style="cursor:pointer">';
           h+='<span class="ch-card-binding-arrow">→</span>';
           h+='<span class="ch-card-binding-agent" style="color:'+col+'">'+esc(aid)+'</span>';
           h+='<span class="ch-card-binding-route">'+esc(route)+'</span>';
           h+='<span class="ch-card-binding-actions">';
-          h+='<span onclick="event.stopPropagation();showEditBindingModal('+gi+')" title="Edit">Edit</span>';
-          h+='<span onclick="event.stopPropagation();removeBindingGlobal('+gi+')" title="Remove">Remove</span>';
+          h+='<span onclick="event.stopPropagation();showEditBindingModal(\''+esc(bindingKey)+'\')" title="Edit">Edit</span>';
+          h+='<span onclick="event.stopPropagation();removeBindingGlobal(\''+esc(bindingKey)+'\')" title="Remove">Remove</span>';
           h+='</span></div>';
         });
         h+='</div></div>';
@@ -4057,17 +4145,18 @@ function deleteChannelPage(name){
     return api(_deferParam("bindings"),{method:"PUT",body:JSON.stringify({bindings:remaining})});
   }).then(function(){
     if(D.channels&&D.channels[name])delete D.channels[name];
-    D.bindings=remaining;
+    D.bindings=_normalizeBindings(remaining);
     toast("Channel removed","ok");
     _deferRestart("Channel removed");
     _refreshEffectiveUi();
   }).catch(function(e){toast(e.message,"err")});
 }
-function removeBindingGlobal(gi){
+function removeBindingGlobal(bindingRef){
+  var gi=_bindingRefIndex(bindingRef);
   var all=(D.bindings||[]).slice();
   if(gi<0||gi>=all.length)return;
   all.splice(gi,1);
-  api(_deferParam("bindings"),{method:"PUT",body:JSON.stringify({bindings:all})}).then(function(){toast("Rule removed","ok");_deferRestart("Binding removed");D.bindings=all;_refreshEffectiveUi()}).catch(function(e){toast(e.message,"err")});
+  api(_deferParam("bindings"),{method:"PUT",body:JSON.stringify({bindings:all})}).then(function(){toast("Rule removed","ok");_deferRestart("Binding removed");D.bindings=_normalizeBindings(all);_refreshEffectiveUi()}).catch(function(e){toast(e.message,"err")});
 }
 
 // ── Channel Configure / Add / Routing (new implementation) ──
@@ -4665,15 +4754,16 @@ function doAddBinding(chName){
     }
   }
 
-  var all=(D.bindings||[]).concat([{agentId:agentId,match:match}]);
+  var all=(D.bindings||[]).concat([{id:_bindingKey({agentId:agentId,match:match},(D.bindings||[]).length),agentId:agentId,match:match}]);
   api(_deferParam("bindings"),{method:"PUT",body:JSON.stringify({bindings:all})}).then(function(){
-    toast("Binding added","ok");_deferRestart("Binding added");D.bindings=all;closeModal();_refreshEffectiveUi();
+    toast("Binding added","ok");_deferRestart("Binding added");D.bindings=_normalizeBindings(all);closeModal();_refreshEffectiveUi();
   }).catch(function(e){toast(e.message,"err")});
 }
 
 // ── Edit Binding modal: modify an existing binding in-place ──
-function showEditBindingModal(gi){
+function showEditBindingModal(bindingRef){
   var bindings=D.bindings||[];
+  var gi=_bindingRefIndex(bindingRef);
   if(gi<0||gi>=bindings.length)return;
   var b=bindings[gi];
   var m=b.match||{};
@@ -4691,6 +4781,7 @@ function showEditBindingModal(gi){
   h+='<div class="fg">'+tip("Channel","Which channel type to bind to.")
     +'<select id="eb-ch" onchange="onEditBindingChChange()">';
   chNames.forEach(function(c){h+='<option value="'+esc(c)+'"'+(c===chName?' selected':'')+'>'+chIcon(c)+' '+esc(c)+'</option>'});
+  if(chName&&chNames.indexOf(chName)<0){h+='<option value="'+esc(chName)+'" selected>(missing) '+esc(chName)+'</option>'}
   h+='</select></div>';
 
   h+='<div id="eb-dynamic">';
@@ -4699,7 +4790,7 @@ function showEditBindingModal(gi){
 
   h+='<div class="file-actions-row mt-md">';
   h+='<button class="btn" onclick="closeModal()">Cancel</button>';
-  h+='<button class="btn btn-accent" onclick="doEditBinding('+gi+')">Save</button></div>';
+  h+='<button class="btn btn-accent" onclick="doEditBinding(\''+esc(b.id||_bindingKey(b,gi))+'\')">Save</button></div>';
   h+='</div>';
   openModal("Edit Binding",h);
   // Constrain modal width for this small form
@@ -4726,7 +4817,9 @@ function onEditBindingAccChange(chName){
   container.innerHTML=_renderDiscordBindingPeerSection(chName, "eb-", V("eb-acc").trim(), V("eb-guild-id").trim(), V("eb-peer-id").trim(), true);
 }
 
-function doEditBinding(gi){
+function doEditBinding(bindingRef){
+  var gi=_bindingRefIndex(bindingRef);
+  if(gi<0)return;
   var chName=V("eb-ch");
   if(!chName){toast("Select a channel","err");return}
   var agentId=V("eb-agent");
@@ -4749,9 +4842,9 @@ function doEditBinding(gi){
   }
 
   var all=(D.bindings||[]).slice();
-  all[gi]={agentId:agentId,match:match};
+  all[gi]={id:(D.bindings[gi]&&D.bindings[gi].id)||_bindingKey(D.bindings[gi],gi),agentId:agentId,match:match};
   api(_deferParam("bindings"),{method:"PUT",body:JSON.stringify({bindings:all})}).then(function(){
-    toast("Binding updated","ok");_deferRestart("Binding updated");D.bindings=all;closeModal();_refreshEffectiveUi();
+    toast("Binding updated","ok");_deferRestart("Binding updated");D.bindings=_normalizeBindings(all);closeModal();_refreshEffectiveUi();
   }).catch(function(e){toast(e.message,"err")});
 }
 
@@ -6010,6 +6103,7 @@ function _waitForGateway(cb){
       api("overview",{_quiet:true}).then(function(d){
         clearInterval(poll);
         D=d;
+        D.bindings=_normalizeBindings(d.bindings||((d.config&&d.config.bindings)||[]));
         _updateRestartStatus("✓ Gateway is back online!","#00d68f");
         if(badge){badge.className="gw-badge ok";badge.textContent="● Gateway Online"}
         setTimeout(function(){if(cb)cb()},600);
@@ -6110,7 +6204,7 @@ function _discardPending(){
     toast("Pending changes discarded","ok");
     api("overview?fast=1",{_quiet:true}).then(function(d){
       D.agents=d.agents||D.agents;
-      D.bindings=d.bindings||[];
+       D.bindings=_normalizeBindings(d.bindings||[]);
       if(d.config)_setEffectiveConfig(d.config);
       else if(d.channels)D.channels=d.channels;
       _refreshEffectiveUi();
@@ -8700,7 +8794,7 @@ function _startSessionPoll(){
       api("overview?fast=1",{_quiet:true}).then(function(d){
         _sessionPollBusy=false;
         D.agents=d.agents||D.agents;
-        D.bindings=d.bindings||D.bindings;
+        D.bindings=_normalizeBindings(d.bindings||D.bindings);
         if(d.config){D.config=d.config;D.channels=d.channels||d.config.channels||D.channels||{}}
         else if(d.channels){D.channels=d.channels}
         var newFp=_computeGraphFingerprint(D.agents,D.bindings,D.channels);

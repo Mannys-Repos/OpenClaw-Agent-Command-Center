@@ -40,6 +40,7 @@ describe("dashboard channels visibility", () => {
             esc: (value: unknown) => String(value ?? ""),
             chIcon: (ch: string) => `[${ch}]`,
             agentColor: () => "#123456",
+            _bindingKey: (b: any, idx: number) => b.id || `binding-${idx}`,
             _describeBindingRoute: (m: any) => m.guildId ? `guild: ${m.guildId}` : "all channels",
             showAddAccountModal: () => undefined,
             showAddBindingModal: () => undefined,
@@ -198,6 +199,8 @@ describe("dashboard channels visibility", () => {
         const ctx: any = {
             D: { bindings: [] },
             V: (id: string) => values[id] || "",
+            _bindingKey: (b: any, idx: number) => b.id || `binding-${idx}`,
+            _bindingRefIndex: (ref: string) => ref === "bind-1" ? 0 : -1,
             api: (_url: string, opts: any) => { payloads.push(JSON.parse(opts.body)); return Promise.resolve({}); },
             _deferParam: (path: string) => path,
             toast: () => undefined,
@@ -210,12 +213,74 @@ describe("dashboard channels visibility", () => {
         vm.runInNewContext(editFn, ctx);
 
         ctx.doAddBinding("discord");
-        ctx.D.bindings = [{ agentId: "alpha", match: { channel: "discord", accountId: "default" } }];
-        ctx.doEditBinding(0);
+        ctx.D.bindings = [{ id: "bind-1", agentId: "alpha", match: { channel: "discord", accountId: "default" } }];
+        ctx.doEditBinding("bind-1");
 
+        expect(payloads[0].bindings[0].id).toBeTruthy();
         expect(payloads[0].bindings[0].match.guildId).toBe("guild-1");
         expect(payloads[0].bindings[0].match.peer).toEqual({ kind: "channel", id: "chan-1" });
         expect(payloads[1].bindings[0].match.guildId).toBe("guild-2");
         expect(payloads[1].bindings[0].match.peer).toEqual({ kind: "channel", id: "chan-2" });
+        expect(payloads[1].bindings[0].id).toBe("bind-1");
+    });
+
+    it("targets sibling bindings by stable id in the agent drawer", () => {
+        const source = readFileSync(DASHBOARD_JS_PATH, "utf-8");
+        const renderFn = extractFunction(source, "renderChannels", "addBinding");
+        const ctx: any = {
+            D: {
+                bindings: [
+                    { id: "bind-a", agentId: "alpha", match: { channel: "discord", accountId: "default" } },
+                    { id: "bind-b", agentId: "alpha", match: { channel: "discord", accountId: "default" } },
+                ],
+            },
+            esc: (value: unknown) => String(value ?? ""),
+            chIcon: (ch: string) => `[${ch}]`,
+            _bindingKey: (b: any) => b.id,
+            _bindingCountLabel: (count: number) => `${count} bindings`,
+            _bindingCountForAgent: (agentId: string) => agentId === "alpha" ? 2 : 0,
+        };
+
+        vm.runInNewContext(renderFn, ctx);
+
+        const html = ctx.renderChannels({ id: "alpha" });
+        expect(html).toContain("2 bindings");
+        expect(html).toContain("showEditBindingModal('bind-a')");
+        expect(html).toContain("showEditBindingModal('bind-b')");
+        expect(html).toContain("removeBinding('alpha','bind-a')");
+        expect(html).toContain("removeBinding('alpha','bind-b')");
+    });
+
+    it("keeps orphaned binding channels selectable when editing", () => {
+        const source = readFileSync(DASHBOARD_JS_PATH, "utf-8");
+        const editModalFn = extractFunction(source, "showEditBindingModal", "_buildEditBindingAccPeer");
+        let modalHtml = "";
+        const ctx: any = {
+            D: {
+                agents: [{ id: "alpha" }],
+                bindings: [
+                    { id: "missing-1", agentId: "alpha", match: { channel: "legacy", accountId: "default" } },
+                ],
+                channels: {
+                    discord: { accounts: { default: {} } },
+                },
+            },
+            tip: (_label: string, body: string) => body,
+            esc: (value: unknown) => String(value ?? ""),
+            chIcon: (ch: string) => `[${ch}]`,
+            document: { querySelector: () => null },
+            openModal: (_title: string, html: string) => { modalHtml = html; },
+            closeModal: () => undefined,
+            onEditBindingChChange: () => undefined,
+            onEditBindingAccChange: () => undefined,
+            setTimeout: (_fn: Function) => undefined,
+            _bindingRefIndex: (ref: string) => ref === "missing-1" ? 0 : -1,
+            _buildEditBindingAccPeer: () => "",
+        };
+
+        vm.runInNewContext(editModalFn, ctx);
+        ctx.showEditBindingModal("missing-1");
+
+        expect(modalHtml).toContain("(missing) legacy");
     });
 });
