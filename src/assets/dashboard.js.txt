@@ -2081,12 +2081,14 @@ function _setSkillEnabledInCache(agentId,dirName,enabled,scope){
     renderGlobalSkillsPage();
     return;
   }
+  var managedTouched=false;
   var skills=_skillsCache[agentId];
-  if(skills){for(var i=0;i<skills.length;i++){if(skills[i].dirName===dirName)skills[i].enabled=enabled}}
+  if(skills){for(var i=0;i<skills.length;i++){if(skills[i].dirName===dirName){managedTouched=managedTouched||skills[i].tier==="managed";skills[i].enabled=enabled}}}
   if(drawerAgent&&drawerAgent.id===agentId&&drawerTab==="tools"){
     var el=Q("skills-container-"+agentId);
     if(el)el.innerHTML=renderSkillsSection(drawerAgent);
   }
+  if(managedTouched){_refreshGlobalSkillsPage()}
 }
 
 function toggleSkill(agentId,dirName,enabled,scope){
@@ -8004,8 +8006,15 @@ function renderGlobalSkillsPage(){
   el.innerHTML=h;
 }
 
+function _getGlobalSkillState(skill){
+  if(skill.enabled){return{state:"global",label:"Enabled globally"}}
+  if((skill.agentEnabledCount||0)>0){return{state:"partial",label:"Enabled for some agents"}}
+  return{state:"disabled",label:"Disabled for all agents"}
+}
+
 function _renderGlobalSkillCard(skill){
-  var cls="skill-card"+(skill.enabled===false?" skill-disabled":"");
+  var state=_getGlobalSkillState(skill);
+  var cls="skill-card"+(state.state==="disabled"?" skill-disabled":"")+(state.state==="partial"?" skill-partial":"");
   var badgeCls="skill-badge skill-badge-"+skill.tier;
   var emoji=skill.emoji?'<span class="skill-emoji">'+esc(skill.emoji)+'</span>':'';
   var warning=!skill.hasValidSkillMd?'<span class="skill-warning" title="No valid SKILL.md">⚠</span>':'';
@@ -8014,6 +8023,7 @@ function _renderGlobalSkillCard(skill){
   h+='<div class="skill-card-info">';
   h+=emoji+'<span class="skill-name">'+esc(skill.name||skill.dirName)+'</span>';
   h+='<span class="'+badgeCls+'">'+(skill.tier==="managed"?"Global":"Bundled")+'</span>';
+  h+='<span class="skill-state skill-state-'+state.state+'">'+esc(state.label)+'</span>';
   h+=warning;
   if(skill.description){h+='<div class="skill-desc">'+esc(skill.description)+'</div>'}
   h+='</div>';

@@ -6068,8 +6068,38 @@ code {
   color: var(--tx3)
 }
 
+.skill-state {
+  font-size: var(--type-badge);
+  font-weight: 600;
+  padding: 2px 8px;
+  border-radius: 10px;
+  text-transform: uppercase;
+  letter-spacing: .3px;
+  flex-shrink: 0
+}
+
+.skill-state-global {
+  background: rgba(0, 214, 143, .12);
+  color: var(--green)
+}
+
+.skill-state-partial {
+  background: rgba(255, 170, 0, .12);
+  color: var(--orange)
+}
+
+.skill-state-disabled {
+  background: var(--bg3);
+  color: var(--tx3)
+}
+
 .skill-disabled {
   opacity: .45
+}
+
+.skill-partial {
+  border-color: rgba(255, 170, 0, .35);
+  box-shadow: inset 0 0 0 1px rgba(255, 170, 0, .06)
 }
 
 .skill-shadowed {

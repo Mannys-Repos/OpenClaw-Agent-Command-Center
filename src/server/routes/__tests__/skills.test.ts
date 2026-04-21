@@ -242,6 +242,41 @@ describe("skills routes — global list", () => {
         expect(res._body.skills[0].name).toBe("My Skill");
         expect(res._body.skills[0].tier).toBe("managed");
         expect(res._body.skills[0].enabled).toBe(false);
+        expect(res._body.skills[0].enabledState).toBe("disabled");
+        expect(res._body.skills[0].agentEnabledCount).toBe(0);
+    });
+
+    it("marks managed skills as partially enabled when only some agents have them on", async () => {
+        mockConfig = {
+            agents: { list: [{ id: "main" }, { id: "alpha" }] },
+        };
+        mockSkillsConfigFile = JSON.stringify({
+            alpha: {
+                "shared-skill": { enabled: true },
+            },
+        });
+
+        const { readdirSync, readFileSync } = await import("node:fs");
+        (readdirSync as any).mockReturnValue(["shared-skill"]);
+        (readFileSync as any).mockImplementation((p: string) => {
+            if (p === "/tmp/openclaw/skills/shared-skill/SKILL.md") {
+                return "---\nname: Shared Skill\ndescription: shared\n---\n\nbody";
+            }
+            if (p === "/tmp/openclaw/dashboard/skills-config.json") {
+                return mockSkillsConfigFile;
+            }
+            return "";
+        });
+
+        const req = mockReq("GET");
+        const res = mockRes();
+        const handled = await handleSkillRoutes(req, res, new URL("http://localhost/api/skills"), "/skills");
+
+        expect(handled).toBe(true);
+        expect(res.statusCode).toBe(200);
+        expect(res._body.skills[0].enabled).toBe(false);
+        expect(res._body.skills[0].enabledState).toBe("partial");
+        expect(res._body.skills[0].agentEnabledCount).toBe(1);
     });
 
     it("refreshes every agent workspace when a managed skill is installed", async () => {

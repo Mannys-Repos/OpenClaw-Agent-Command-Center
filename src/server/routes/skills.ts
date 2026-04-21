@@ -53,6 +53,23 @@ function getManagedSkillEnabled(skillsCfg: any, agentId: string, dirName: string
     return true;
 }
 
+function getManagedSkillStatus(skillsCfg: any, dirName: string): { enabledState: "global" | "partial" | "disabled"; agentEnabledCount: number } {
+    const globalEntry = skillsCfg?.[GLOBAL_MANAGED_SKILLS_KEY]?.[dirName];
+    const globalEnabled = globalEntry !== undefined ? globalEntry.enabled !== false : false;
+
+    let agentEnabledCount = 0;
+    for (const [key, entries] of Object.entries(skillsCfg || {})) {
+        if (key === GLOBAL_MANAGED_SKILLS_KEY) continue;
+        if (!entries || typeof entries !== "object") continue;
+        if ((entries as any)?.[dirName]?.enabled !== false) agentEnabledCount++;
+    }
+
+    return {
+        enabledState: globalEnabled ? "global" : agentEnabledCount > 0 ? "partial" : "disabled",
+        agentEnabledCount,
+    };
+}
+
 function setGlobalManagedSkillEnabled(skillsCfg: any, dirName: string, enabled: boolean): void {
     if (!skillsCfg[GLOBAL_MANAGED_SKILLS_KEY]) skillsCfg[GLOBAL_MANAGED_SKILLS_KEY] = {};
     skillsCfg[GLOBAL_MANAGED_SKILLS_KEY][dirName] = { enabled };
@@ -320,6 +337,7 @@ export async function handleSkillRoutes(
         const skillsCfg = readEffectiveSkillsConfig();
         for (const s of skills) {
             s.enabled = getManagedSkillEnabled(skillsCfg, "__global__", s.dirName, s.tier);
+            Object.assign(s, getManagedSkillStatus(skillsCfg, s.dirName));
         }
         json(res, 200, { skills });
         return true;
@@ -363,6 +381,7 @@ export async function handleSkillRoutes(
         const allSkills = [...wsSkills, ...managedSkills];
         for (const s of allSkills) {
             s.enabled = getManagedSkillEnabled(skillsCfg, agentId, s.dirName, s.tier);
+            if (s.tier === "managed") Object.assign(s, getManagedSkillStatus(skillsCfg, s.dirName));
         }
 
         json(res, 200, { skills: allSkills });
