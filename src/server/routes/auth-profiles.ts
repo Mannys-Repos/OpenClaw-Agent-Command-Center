@@ -8,6 +8,7 @@ import {
     readConfig,
     writeConfig,
     stageConfig,
+    stagePendingFileMutation,
     readEffectiveConfig,
     readEnv,
     execAsync,
@@ -30,6 +31,8 @@ export async function handleAuthProfileRoutes(
         const body = await parseBody(req);
         const profileKey = body.profileKey;
         if (!profileKey) { json(res, 400, { error: "profileKey required" }); return true; }
+        const defer = _url.searchParams?.get("defer") === "1";
+        const config = defer ? readEffectiveConfig() : readConfig();
 
         let deleted = false;
         const deletedFrom: string[] = [];
@@ -61,11 +64,24 @@ export async function handleAuthProfileRoutes(
                 const profiles = raw.profiles || raw;
                 if (profiles && typeof profiles === "object" && !Array.isArray(profiles) && profiles[profileKey]) {
                     delete profiles[profileKey];
+                    const nextContent = raw.profiles
+                        ? JSON.stringify({ ...raw, profiles }, null, 2)
+                        : JSON.stringify(profiles, null, 2);
                     if (raw.profiles) {
                         raw.profiles = profiles;
-                        writeFileSync(authFile, JSON.stringify(raw, null, 2), "utf-8");
                     } else {
-                        writeFileSync(authFile, JSON.stringify(profiles, null, 2), "utf-8");
+                        // no-op; nextContent already captured
+                    }
+                    if (defer) {
+                        stagePendingFileMutation({
+                            key: `auth-profile:${authFile}:${profileKey}`,
+                            path: authFile,
+                            description: `Delete auth profile from ${authFile.replace(OPENCLAW_DIR, "~/.openclaw")}: ${profileKey}`,
+                            kind: "auth-profile",
+                            content: nextContent,
+                        });
+                    } else {
+                        writeFileSync(authFile, nextContent, "utf-8");
                     }
                     deleted = true;
                     deletedFrom.push(authFile.replace(OPENCLAW_DIR, "~/.openclaw"));
@@ -75,8 +91,6 @@ export async function handleAuthProfileRoutes(
 
         // Also remove from openclaw.json auth.profiles
         try {
-            const defer = _url.searchParams?.get("defer") === "1";
-            const config = defer ? readEffectiveConfig() : readConfig();
             if (config.auth?.profiles?.[profileKey]) {
                 delete config.auth.profiles[profileKey];
                 if (defer) {
@@ -338,6 +352,7 @@ export async function handleAuthProfileRoutes(
         const envPath = join(OPENCLAW_DIR, ".env");
         const envContent = tryReadFile(envPath);
         if (envContent === null) { json(res, 404, { error: ".env file not found" }); return true; }
+        const defer = _url.searchParams?.get("defer") === "1";
 
         try {
             const lines = envContent.split("\n");
@@ -345,7 +360,18 @@ export async function handleAuthProfileRoutes(
                 const m = line.match(/^\s*([A-Z0-9_]+)\s*=/);
                 return !(m && m[1] === envVar);
             });
-            writeFileSync(envPath, filtered.join("\n"), "utf-8");
+            const nextContent = filtered.join("\n");
+            if (defer) {
+                stagePendingFileMutation({
+                    key: `envkey:${envVar}`,
+                    path: envPath,
+                    description: `Remove env key: ${envVar}`,
+                    kind: "env",
+                    content: nextContent,
+                });
+            } else {
+                writeFileSync(envPath, nextContent, "utf-8");
+            }
             json(res, 200, { ok: true });
             return true;
         } catch (e: any) {
@@ -363,6 +389,7 @@ export async function handleAuthProfileRoutes(
         if (!value) { json(res, 400, { error: "Value is required" }); return true; }
 
         const envPath = join(OPENCLAW_DIR, ".env");
+        const defer = _url.searchParams?.get("defer") === "1";
         try {
             let content = tryReadFile(envPath) ?? "";
             // Check if the key already exists — update it
@@ -381,7 +408,18 @@ export async function handleAuthProfileRoutes(
                 if (content.length > 0 && !content.endsWith("\n")) lines.push("");
                 lines.push(`${envVar}="${value}"`);
             }
-            writeFileSync(envPath, lines.join("\n"), "utf-8");
+            const nextContent = lines.join("\n");
+            if (defer) {
+                stagePendingFileMutation({
+                    key: `envkey:${envVar}`,
+                    path: envPath,
+                    description: `${found ? "Update" : "Add"} env key: ${envVar}`,
+                    kind: "env",
+                    content: nextContent,
+                });
+            } else {
+                writeFileSync(envPath, nextContent, "utf-8");
+            }
             json(res, 200, { ok: true, updated: found });
             return true;
         } catch (e: any) {

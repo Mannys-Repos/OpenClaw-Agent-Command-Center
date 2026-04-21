@@ -3,6 +3,7 @@ import type { IncomingMessage, ServerResponse } from "node:http";
 
 let mockConfig: any = { agents: { list: [{ id: "main" }] } };
 let mockPendingDestructiveOps: any[] = [];
+const mockExecFileSync = vi.hoisted(() => vi.fn());
 
 vi.mock("../../api-utils.js", () => {
     return {
@@ -22,6 +23,14 @@ vi.mock("../../api-utils.js", () => {
         OPENCLAW_DIR: "/tmp/openclaw",
         execAsync: vi.fn(async () => ""),
         shellEsc: vi.fn((s: string) => s.replace(/"/g, '\\"').replace(/\\/g, "\\\\").replace(/\$/g, "\\$").replace(/`/g, "\\`")),
+    };
+});
+
+vi.mock("node:child_process", async (importOriginal) => {
+    const actual = await importOriginal<typeof import("node:child_process")>();
+    return {
+        ...actual,
+        execFileSync: mockExecFileSync,
     };
 });
 
@@ -279,6 +288,20 @@ describe("plugins routes", () => {
             expect(handled).toBe(true);
             expect(res.statusCode).toBe(200);
             expect(execAsync).toHaveBeenCalled();
+        });
+
+        it("stages plugin installation when defer=1", async () => {
+            const { parseBody } = await import("../../api-utils.js");
+            (parseBody as any).mockResolvedValue({ identifier: "@openclaw/test" });
+            const req = mockReq("POST");
+            const res = mockRes();
+            const handled = await handlePluginRoutes(req, res, new URL("http://localhost/api/plugins/install?defer=1"), "/plugins/install");
+
+            expect(handled).toBe(true);
+            expect(res.statusCode).toBe(200);
+            expect(res._body.deferred).toBe(true);
+            expect(mockPendingDestructiveOps.some((op) => op.kind === "plugin-install")).toBe(true);
+            expect(mockExecFileSync).not.toHaveBeenCalled();
         });
     });
 

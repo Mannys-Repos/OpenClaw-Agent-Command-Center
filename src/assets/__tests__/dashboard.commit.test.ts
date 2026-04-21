@@ -53,4 +53,30 @@ describe("dashboard commit flow", () => {
         expect(toastCall).toBeDefined();
         expect(toastCall).toContain("Delete flow: solo: permission denied");
     });
+
+    it("uses deferred plugin install requests from the UI", () => {
+        const source = readFileSync(DASHBOARD_JS_PATH, "utf-8");
+        const installFn = extractFunction(source, "submitInstallPlugin", "showLogs");
+
+        const calls: any[] = [];
+        const ctx: any = {
+            V: () => "@openclaw/test",
+            closeModal: () => calls.push("close"),
+            toast: (message: string) => calls.push(`toast:${message}`),
+            api: (path: string) => {
+                calls.push(path);
+                return Promise.resolve({});
+            },
+            _pluginsCache: null,
+            _refreshToolRegistry: () => calls.push("refresh"),
+            renderPluginsPage: () => calls.push("render"),
+            _deferRestart: () => calls.push("defer"),
+        };
+
+        vm.runInNewContext(installFn, ctx);
+        ctx.submitInstallPlugin();
+
+        expect(calls).toContain("plugins/install?defer=1");
+        expect(calls).not.toContain("refresh");
+    });
 });

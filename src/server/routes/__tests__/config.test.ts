@@ -23,6 +23,7 @@ vi.mock("../../api-utils.js", () => ({
     getPendingChangeCount: vi.fn(() => (mockPendingConfig ? 1 : 0) + mockPendingDestructiveOps.length),
     getPendingChangeDescriptions: vi.fn(() => ["staged config", ...mockPendingDestructiveOps.map((op) => op.description)]),
     getConfigError: vi.fn(() => null),
+    parseConfigText: vi.fn((raw: string) => ({ data: JSON.parse(raw), error: null })),
     parseBody: vi.fn(async () => ({})),
     execAsync: vi.fn(async () => ""),
     tryReadFile: vi.fn(() => mockRaw),
@@ -64,6 +65,7 @@ describe("config routes", () => {
         expect(res.statusCode).toBe(200);
         expect(res._body.raw).toBe(mockRaw);
         expect(res._body.hasPending).toBe(true);
+        expect((await import("../../api-utils.js")).readConfig).not.toHaveBeenCalled();
     });
 
     it("rebuilds skill indexes when discarding pending skill deletes", async () => {

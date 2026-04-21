@@ -1,4 +1,5 @@
 import { existsSync, readdirSync, realpathSync, statSync, rmSync } from "node:fs";
+import { execFileSync } from "node:child_process";
 import { isAbsolute, join, relative } from "node:path";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import {
@@ -247,6 +248,7 @@ export async function handlePluginRoutes(
     if (path === "/plugins/install" && method === "POST") {
         const body = await parseBody(req);
         const identifier = (body.identifier || "").trim();
+        const defer = _url.searchParams?.get("defer") === "1";
         if (!identifier) {
             return json(res, 400, { error: "identifier required" }), true;
         }
@@ -255,6 +257,18 @@ export async function handlePluginRoutes(
         }
 
         try {
+            if (defer) {
+                stagePendingDestructiveOp({
+                    kind: "plugin-install",
+                    key: `plugin-install:${identifier}`,
+                    description: `Install plugin: ${identifier}`,
+                    apply: () => {
+                        execFileSync("openclaw", ["plugins", "install", identifier], { encoding: "utf-8", timeout: 120000 });
+                    },
+                });
+                json(res, 200, { ok: true, deferred: true });
+                return true;
+            }
             const cmd = `openclaw plugins install "${shellEsc(identifier)}"`;
             await execAsync(cmd, { timeout: 120000 });
             json(res, 200, { ok: true });

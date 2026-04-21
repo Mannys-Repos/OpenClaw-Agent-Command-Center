@@ -1688,7 +1688,7 @@ function saveIdentity(id){
   var isDef=CK("ai-def-"+id);
   var u={name:name};
   // Save icon to dashboard extension config (not openclaw.json)
-  if(icon)api("dashboard/icons",{method:"PUT",body:JSON.stringify({agentId:id,icon:icon})}).catch(function(){});
+  if(icon)api(_deferParam("dashboard/icons"),{method:"PUT",body:JSON.stringify({agentId:id,icon:icon})}).catch(function(){});
   if(model){u.model={primary:model};if(fb.length>0)u.model.fallbacks=fb}
   if(ws)u.workspace=ws;
   if(idName)u.identity={name:idName};if(mp.length)u.groupChat={mentionPatterns:mp};
@@ -1732,6 +1732,11 @@ function saveIdentity(id){
       if(drawerAgent&&drawerAgent.id===id){
         drawerAgent=D.agents.find(function(a){return a.id===id})||drawerAgent;
         renderDrawer();
+      }
+      if(icon){
+        for(var j=0;j<D.agents.length;j++){
+          if(D.agents[j].id===id){D.agents[j].icon=icon;break}
+        }
       }
       renderAgentList();
       _invalidateAndRedraw();
@@ -5795,12 +5800,10 @@ function cfgSave(){
     api("config?defer=1",{method:"PUT",body:JSON.stringify({config:config}),_quiet:true}).then(function(){
       _setEffectiveConfig(config);
       _refreshEffectiveUi();
-      _refreshToolRegistry();
       done();
       toast("Config saved","ok");
       _deferRestart("Config saved");
       if(statusEl)statusEl.innerHTML='<span class="cfg-status-saved">✓ Saved</span>';
-      load();
     }).catch(function(e){
       done();
       toast("Save failed: "+e.message,"err");
@@ -7843,11 +7846,10 @@ function refreshAuthToken(profileKey,providerName){
 
 function removeEnvKey(envVar,providerName){
   if(!confirm("Remove "+providerName+" API key from ~/.openclaw/.env?\n\nThis will also remove model aliases and agent references for this provider."))return;
-  api("auth/envkey",{method:"DELETE",body:JSON.stringify({envVar:envVar})})
+  api("auth/envkey?defer=1",{method:"DELETE",body:JSON.stringify({envVar:envVar})})
     .then(function(d){
       toast("Removed "+envVar,"ok");
       _cleanupProviderAliases(providerName);
-      _forceRefreshApiStatus();
       _runHealthCheck();
     })
     .catch(function(e){toast("Failed: "+e.message,"err")});
@@ -7878,12 +7880,11 @@ function saveEditedApiKey(envVar,providerName){
   var value=V("edit-key-value").trim();
   if(!value){toast("Enter the new key value","err");return}
   _showProgress();
-  api("auth/envkey",{method:"POST",body:JSON.stringify({envVar:envVar,value:value}),_quiet:true})
+  api("auth/envkey?defer=1",{method:"POST",body:JSON.stringify({envVar:envVar,value:value}),_quiet:true})
     .then(function(d){
       _hideProgress();
       toast("Updated "+envVar,"ok");
       closeModal();
-      _forceRefreshApiStatus();
       _deferRestart("API key updated");
     })
     .catch(function(e){_hideProgress();toast("Failed: "+e.message,"err")});
@@ -7943,12 +7944,11 @@ function saveNewApiKey(){
   if(!envVar){toast("Enter an env variable name","err");return}
   if(!value){toast("Enter the API key value","err");return}
   _showProgress();
-  api("auth/envkey",{method:"POST",body:JSON.stringify({envVar:envVar,value:value}),_quiet:true})
+  api("auth/envkey?defer=1",{method:"POST",body:JSON.stringify({envVar:envVar,value:value}),_quiet:true})
     .then(function(d){
       _hideProgress();
       toast((d.updated?"Updated":"Added")+" "+envVar,"ok");
       closeModal();
-      _forceRefreshApiStatus();
       _deferRestart("API key added");
       _runHealthCheck();
     })
@@ -8389,10 +8389,9 @@ function submitInstallPlugin(){
   var identifier=V("install-plugin-id").trim();
   if(!identifier){toast("Plugin identifier is required","err");return}
   closeModal();toast("Installing plugin…","info");
-  api("plugins/install",{method:"POST",body:JSON.stringify({identifier:identifier})}).then(function(){
+  api("plugins/install?defer=1",{method:"POST",body:JSON.stringify({identifier:identifier})}).then(function(){
     toast("Plugin installed","ok");
     _pluginsCache=null;
-    _refreshToolRegistry();
     renderPluginsPage();
     _deferRestart("Plugin installed");
   }).catch(function(e){

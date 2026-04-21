@@ -5,6 +5,7 @@ import type { IncomingMessage, ServerResponse } from "node:http";
 let mockConfig: any = {};
 let mockStagedConfig: any = null;
 let mockPendingDestructiveOps: any[] = [];
+let mockPendingFileMutations: any[] = [];
 let mockFlowDefs: Record<string, string> = {};
 let mockFlowStates: Record<string, string> = {};
 let mockFlowHistory: Record<string, string> = {};
@@ -29,7 +30,10 @@ vi.mock("../../api-utils.js", () => {
             mockStagedConfig = JSON.parse(JSON.stringify(cfg));
         }),
         stagePendingDestructiveOp: vi.fn((op: any) => { mockPendingDestructiveOps.push(op); }),
+        stagePendingFileMutation: vi.fn((op: any) => { mockPendingFileMutations.push(op); }),
         getPendingDestructiveOps: vi.fn(() => JSON.parse(JSON.stringify(mockPendingDestructiveOps))),
+        getPendingFileMutationContent: vi.fn(() => undefined),
+        hasPendingFileMutation: vi.fn(() => false),
         getConfigError: vi.fn(() => null),
         readDashboardConfig: vi.fn(() => ({})),
         writeDashboardConfig: vi.fn(),
@@ -41,6 +45,7 @@ vi.mock("../../api-utils.js", () => {
         getAgentDir: vi.fn((a: any) => `/tmp/agent/${a.id}`),
         getAgentSessionsDir: vi.fn((id: string) => `/tmp/sessions/${id}`),
         AGENTS_STATE_DIR: "/tmp/fake-agents-state",
+        DASHBOARD_CONFIG_PATH: "/tmp/fake-dashboard/dashboard-config.json",
         WORKSPACE_MD_FILES: ["SOUL.md", "IDENTITY.md", "AGENTS.md", "TOOLS.md", "BOOTSTRAP.md"],
         DASHBOARD_FLOW_DEFS_DIR: "/tmp/fake-flows/definitions",
         DASHBOARD_FLOW_STATE_DIR: "/tmp/fake-flows/state",
@@ -191,6 +196,7 @@ describe("DELETE /api/agents/{id}", () => {
         };
         mockStagedConfig = null;
         mockPendingDestructiveOps = [];
+        mockPendingFileMutations = [];
         mockFlowDefs = {};
         mockFlowStates = {};
         mockFlowHistory = {};
@@ -270,6 +276,43 @@ describe("DELETE /api/agents/{id}", () => {
         expect(mockFlowDefs["/tmp/fake-flows/definitions/deferred.flow.ts"]).toContain('agentId: "alpha"');
         expect(res._body.warnings.some((w: string) => w.includes("Apply & Restart"))).toBe(true);
         expect(mockPendingDestructiveOps.some((op: any) => op.kind === "agent" && op.agentId === "alpha")).toBe(true);
+    });
+
+    it("stages workspace scaffolding when creating an agent with defer=1", async () => {
+        const { parseBody } = await import("../../api-utils.js");
+        (parseBody as any).mockResolvedValue({ id: "delta", name: "Delta" });
+
+        const req = createMockReq("POST");
+        const res = createMockRes();
+        const url = new URL("http://localhost/api/agents?defer=1");
+
+        await handleAgentRoutes(req, res, url, "/agents");
+
+        expect(res.statusCode).toBe(201);
+        expect(res._body.deferred).toBe(true);
+        expect(mockFlowDefs).toEqual({});
+        expect(mockPendingFileMutations).toHaveLength(5);
+        expect(mockPendingFileMutations.every((op: any) => op.kind === "workspace-file")).toBe(true);
+        expect(mockPendingFileMutations.some((op: any) => op.content.includes("# SOUL"))).toBe(true);
+    });
+
+    it("stages dashboard icon updates when defer=1", async () => {
+        const { parseBody, stagePendingFileMutation } = await import("../../api-utils.js");
+        (parseBody as any).mockResolvedValue({ name: "Alpha", icon: "🦞" });
+
+        const req = createMockReq("PUT");
+        const res = createMockRes();
+        const url = new URL("http://localhost/api/agents/alpha?defer=1");
+
+        await handleAgentRoutes(req, res, url, "/agents/alpha");
+
+        expect(res.statusCode).toBe(200);
+        expect(res._body.deferred).toBe(true);
+        expect(stagePendingFileMutation).toHaveBeenCalledWith(expect.objectContaining({
+            path: "/tmp/fake-dashboard/dashboard-config.json",
+            kind: "dashboard-config",
+        }));
+        expect(mockPendingFileMutations.some((op: any) => op.path === "/tmp/fake-dashboard/dashboard-config.json")).toBe(true);
     });
 
     it("returns warnings when dependencies are cleaned", async () => {

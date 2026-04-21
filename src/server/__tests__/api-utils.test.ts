@@ -6,9 +6,13 @@ import {
     tryReadFile,
     json,
     stagePendingDestructiveOp,
+    stagePendingFileMutation,
     commitPendingDestructiveOps,
+    commitPendingChanges,
     discardPendingDestructiveOps,
+    discardPendingChanges,
     getPendingDestructiveOps,
+    getPendingChangeCount,
     OPENCLAW_DIR,
     CONFIG_PATH,
     AGENTS_STATE_DIR,
@@ -157,5 +161,55 @@ describe("pending destructive ops", () => {
         expect(order).toEqual(["ok"]);
         expect(getPendingDestructiveOps()).toHaveLength(1);
         expect(getPendingDestructiveOps()[0].key).toBe("bad");
+    });
+});
+
+describe("pending file mutations", () => {
+    const testDir = join(tmpdir(), `api-utils-files-${Date.now()}`);
+    const filePath = join(testDir, "config.json");
+
+    beforeAll(() => {
+        mkdirSync(testDir, { recursive: true });
+    });
+
+    it("starts from a clean staged state", () => {
+        discardPendingChanges();
+        expect(getPendingChangeCount()).toBe(0);
+    });
+
+    afterAll(() => {
+        rmSync(testDir, { recursive: true, force: true });
+    });
+
+    it("overlays staged file content for reads and commits it later", () => {
+        discardPendingChanges();
+        stagePendingFileMutation({
+            key: "file:config",
+            path: filePath,
+            description: "Update config file",
+            kind: "config",
+            content: JSON.stringify({ ok: true }),
+        });
+
+        expect(tryReadFile(filePath)).toContain("\"ok\":true");
+        expect(getPendingChangeCount()).toBeGreaterThan(0);
+
+        const result = commitPendingChanges();
+        expect(result.committed).toBe(true);
+        expect(tryReadFile(filePath)).toContain("\"ok\":true");
+    });
+
+    it("discards staged file mutations", () => {
+        discardPendingChanges();
+        stagePendingFileMutation({
+            key: "file:config-2",
+            path: filePath,
+            description: "Update config file",
+            kind: "config",
+            content: JSON.stringify({ ok: false }),
+        });
+
+        discardPendingChanges();
+        expect(getPendingChangeCount()).toBe(0);
     });
 });

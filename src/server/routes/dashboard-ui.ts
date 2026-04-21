@@ -3,7 +3,8 @@ import {
     json,
     parseBody,
     readDashboardConfig,
-    writeDashboardConfig,
+    stagePendingFileMutation,
+    DASHBOARD_CONFIG_PATH,
 } from "../api-utils.js";
 
 // ─── Dashboard UI Routes — icon management and UI preferences ───
@@ -33,8 +34,14 @@ export async function handleDashboardUiRoutes(
         } else if (body.agentId && body.icon === null) {
             delete dashCfg.icons[body.agentId];
         }
-        writeDashboardConfig(dashCfg);
-        json(res, 200, { ok: true, icons: dashCfg.icons });
+        stagePendingFileMutation({
+            key: `dashboard-config:${body.agentId || "unknown"}`,
+            path: DASHBOARD_CONFIG_PATH,
+            description: body.agentId ? `Update dashboard icon for agent: ${body.agentId}` : "Update dashboard UI config",
+            kind: "dashboard-config",
+            content: JSON.stringify(dashCfg, null, 2),
+        });
+        json(res, 200, { ok: true, deferred: true, icons: dashCfg.icons });
         return true;
     }
 

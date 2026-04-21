@@ -4,6 +4,7 @@ import type { IncomingMessage, ServerResponse } from "node:http";
 // ─── Track mutable mock state ───
 let mockConfig: any = {};
 let mockPendingDestructiveOps: any[] = [];
+let mockPendingFileMutations: any[] = [];
 let mockFlowDefs: Record<string, string> = {};
 let mockFlowStates: Record<string, string> = {};
 let mockReadFiles: Record<string, string> = {};
@@ -22,7 +23,10 @@ vi.mock("../../api-utils.js", () => {
         writeConfig: vi.fn(),
         stageConfig: vi.fn(),
         stagePendingDestructiveOp: vi.fn((op: any) => { mockPendingDestructiveOps.push(op); }),
+        stagePendingFileMutation: vi.fn((op: any) => { mockPendingFileMutations.push(op); }),
         getPendingDestructiveOps: vi.fn(() => JSON.parse(JSON.stringify(mockPendingDestructiveOps))),
+        getPendingFileMutationContent: vi.fn(() => undefined),
+        hasPendingFileMutation: vi.fn(() => false),
         getConfigError: vi.fn(() => null),
         readDashboardConfig: vi.fn(() => ({})),
         writeDashboardConfig: vi.fn(),
@@ -166,6 +170,7 @@ describe("GET /api/tasks/flows/pending", () => {
             },
         };
         mockPendingDestructiveOps = [];
+        mockPendingFileMutations = [];
         mockFlowDefs = {};
         mockFlowStates = {};
         mockReadFiles = {};
@@ -455,6 +460,80 @@ flow.runTask<{ status: string }>({ id: "step2", agentId: "deleted-step-agent", i
         expect(res._body.flows.length).toBe(1);
         expect(res._body.flows[0].name).toBe("orphan_step");
         expect(res._body.flows[0].orphaned).toBe(true);
+    });
+});
+
+describe("POST /api/tasks/flows/save", () => {
+    let handleTaskRoutes: typeof import("../tasks.js").handleTaskRoutes;
+
+    beforeEach(async () => {
+        vi.resetModules();
+        mockConfig = {
+            agents: { list: [{ id: "alpha", tools: {} }] },
+        };
+        mockPendingDestructiveOps = [];
+        mockPendingFileMutations = [];
+        mockFlowDefs = {};
+        mockReadFiles = {};
+
+        const mod = await import("../tasks.js");
+        handleTaskRoutes = mod.handleTaskRoutes;
+    });
+
+    afterEach(() => {
+        vi.restoreAllMocks();
+    });
+
+    it("stages flow definition writes when defer=1", async () => {
+        const { writeFileSync } = await import("node:fs");
+        const { parseBody: parseBodyMock } = await import("../../api-utils.js");
+        (parseBodyMock as any).mockResolvedValue({
+            flow: {
+                name: "solo",
+                agentId: "alpha",
+                steps: [{ id: "step1", agentId: "alpha", description: "", humanIntervention: false }],
+            },
+        });
+
+        const req = createMockReq("POST");
+        const res = createMockRes();
+        const url = new URL("http://localhost/api/tasks/flows/save?defer=1");
+
+        const handled = await handleTaskRoutes(req, res, url, "/tasks/flows/save");
+
+        expect(handled).toBe(true);
+        expect(res.statusCode).toBe(200);
+        expect(res._body.ok).toBe(true);
+        expect(mockPendingFileMutations.some((op: any) => op.kind === "flow-definition" && op.path.endsWith("solo.flow.ts"))).toBe(true);
+        expect(writeFileSync).not.toHaveBeenCalled();
+    });
+
+    it("does not write a fallback flow definition when loading from AGENTS.md", async () => {
+        const agentsMdPath = "/tmp/ws/alpha/AGENTS.md";
+        mockReadFiles[agentsMdPath] = [
+            "## Workflow policy",
+            "",
+            "Coordinate the solo flow.",
+            "",
+            "### Execution policy",
+            "1. **step1** (agent: alpha) — do the thing",
+            "",
+            "# Invoke",
+            "flowName: \"solo\"",
+        ].join("\n");
+
+        const req = createMockReq("GET");
+        const res = createMockRes();
+        const url = new URL("http://localhost/api/tasks/flows/definition/alpha");
+
+        const handled = await handleTaskRoutes(req, res, url, "/tasks/flows/definition/alpha");
+
+        expect(handled).toBe(true);
+        expect(res.statusCode).toBe(200);
+        expect(res._body.flow.name).toBe("solo");
+        const { writeFileSync } = await import("node:fs");
+        expect(writeFileSync).not.toHaveBeenCalled();
+        expect(mockFlowDefs).toEqual({});
     });
 });
 

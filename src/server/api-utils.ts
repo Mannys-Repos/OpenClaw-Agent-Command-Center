@@ -1,6 +1,6 @@
 import { readFileSync, writeFileSync, existsSync, statSync, mkdirSync, rmSync } from "node:fs";
 import { readFile as readFileAsync } from "node:fs/promises";
-import { join } from "node:path";
+import { join, dirname } from "node:path";
 import { exec, execFile } from "node:child_process";
 import { homedir } from "node:os";
 import * as https from "node:https";
@@ -71,30 +71,17 @@ function _pruneCliCache(): void {
 let _configError: string | null = null;
 let _configCache: { data: any; mtime: number } | null = null;
 
-export function readConfig(): any {
-    _configError = null;
-    if (!existsSync(CONFIG_PATH)) return {};
-    let mtime = 0;
-    try {
-        mtime = statSync(CONFIG_PATH).mtimeMs;
-        if (_configCache && _configCache.mtime === mtime) return _configCache.data;
-    } catch { /* fall through to read */ }
-    const raw = readFileSync(CONFIG_PATH, "utf-8");
+export function parseConfigText(raw: string): { data: any; mtime: number; error: string | null } {
     // Try parsing as-is first (standard JSON)
     try {
-        const data = JSON.parse(raw);
-        if (mtime) _configCache = { data, mtime };
-        return data;
+        return { data: JSON.parse(raw), mtime: 0, error: null };
     } catch (e1: any) {
         // Fall back: strip JSON5 comments and trailing commas
         try {
             let cleaned = raw.replace(/\/\/.*$/gm, "").replace(/\/\*[\s\S]*?\*\//g, "");
             cleaned = cleaned.replace(/,\s*([\]}])/g, "$1");
-            const data = JSON.parse(cleaned);
-            if (mtime) _configCache = { data, mtime };
-            return data;
+            return { data: JSON.parse(cleaned), mtime: 0, error: null };
         } catch (e2: any) {
-            // Build a helpful error message with line/column info
             const msg = e1.message || e2.message || "Unknown parse error";
             let detail = msg;
             const posMatch = msg.match(/position\s+(\d+)/i);
@@ -114,11 +101,28 @@ export function readConfig(): any {
                 }).join("\n");
                 detail = `Line ${line}, Column ${col}: ${msg}\n\n${context}`;
             }
-            _configError = detail;
-            console.error("[agent-dashboard] Failed to parse openclaw.json:", detail);
-            return {};
+            return { data: {}, mtime: 0, error: detail };
         }
     }
+}
+
+export function readConfig(): any {
+    _configError = null;
+    if (!existsSync(CONFIG_PATH)) return {};
+    let mtime = 0;
+    try {
+        mtime = statSync(CONFIG_PATH).mtimeMs;
+        if (_configCache && _configCache.mtime === mtime) return _configCache.data;
+    } catch { /* fall through to read */ }
+    const raw = readFileSync(CONFIG_PATH, "utf-8");
+    const parsed = parseConfigText(raw);
+    if (parsed.error) {
+        _configError = parsed.error;
+        console.error("[agent-dashboard] Failed to parse openclaw.json:", parsed.error);
+        return {};
+    }
+    if (mtime) _configCache = { data: parsed.data, mtime };
+    return parsed.data;
 }
 
 export function getConfigError(): string | null { return _configError; }
@@ -135,6 +139,15 @@ let _pendingConfig: any | null = null;
 let _pendingChangeCount = 0;
 let _pendingDescriptions: string[] = [];
 let _pendingSkillsConfig: any | null = null;
+type PendingFileMutation = {
+    key: string;
+    path: string;
+    description: string;
+    kind: string;
+    content: string | null;
+    apply?: () => void;
+};
+let _pendingFileMutations = new Map<string, PendingFileMutation>();
 type PendingDestructiveOp = {
     kind: string;
     key: string;
@@ -180,6 +193,10 @@ export function stagePendingSkillsConfig(config: any): void {
     _pendingSkillsConfig = JSON.parse(JSON.stringify(config));
 }
 
+export function stagePendingFileMutation(mutation: PendingFileMutation): void {
+    _pendingFileMutations.set(mutation.path, mutation);
+}
+
 export function getPendingSkillsConfig(): any | null {
     return _pendingSkillsConfig === null ? null : JSON.parse(JSON.stringify(_pendingSkillsConfig));
 }
@@ -215,6 +232,53 @@ export function stagePendingSkillOp(op: PendingSkillOp): void {
 
 export function getPendingSkillOps(): { kind: "skill"; key: string; description: string; action: PendingSkillOp["action"]; agentId: string; dirName: string; scope: string; tempDir?: string }[] {
     return _pendingSkillOps.map(({ kind, key, description, action, agentId, dirName, scope, tempDir }) => ({ kind, key, description, action, agentId, dirName, scope, tempDir }));
+}
+
+export function getPendingFileMutations(): { key: string; path: string; description: string; kind: string }[] {
+    return [..._pendingFileMutations.values()].map(({ key, path, description, kind }) => ({ key, path, description, kind }));
+}
+
+export function getPendingFileMutationContent(path: string): string | null | undefined {
+    const mutation = _pendingFileMutations.get(path);
+    if (mutation) return mutation.content;
+    return undefined;
+}
+
+export function hasPendingFileMutation(path: string): boolean {
+    return getPendingFileMutationContent(path) !== undefined;
+}
+
+export function commitPendingFileMutations(): { applied: number; failed: { key: string; description: string; error: string }[] } {
+    let applied = 0;
+    const failed: { key: string; description: string; error: string }[] = [];
+    const remaining = new Map<string, PendingFileMutation>();
+    for (const [key, mutation] of _pendingFileMutations.entries()) {
+        try {
+            if (mutation.apply) {
+                mutation.apply();
+            } else if (mutation.content === null) {
+                rmSync(mutation.path, { recursive: false, force: true });
+            } else {
+                if (!existsSync(dirname(mutation.path))) mkdirSync(dirname(mutation.path), { recursive: true });
+                writeFileSync(mutation.path, mutation.content, "utf-8");
+            }
+            applied++;
+        } catch (err) {
+            console.error("[agent-dashboard] Failed to apply staged file mutation:", key, err);
+            failed.push({
+                key,
+                description: mutation.description,
+                error: err instanceof Error ? err.message : String(err),
+            });
+            remaining.set(key, mutation);
+        }
+    }
+    _pendingFileMutations = remaining;
+    return { applied, failed };
+}
+
+export function discardPendingFileMutations(): void {
+    _pendingFileMutations.clear();
 }
 
 export function commitPendingSkillOps(): { applied: number; failed: { key: string; description: string; error: string }[] } {
@@ -326,7 +390,7 @@ export function getPendingConfig(): { config: any; changeCount: number; descript
 }
 
 export function getPendingChangeCount(): number {
-    return _pendingChangeCount + _pendingDestructiveOps.length + _pendingSkillOps.length + (_pendingSkillsConfig !== null && _pendingSkillOps.length === 0 ? 1 : 0);
+    return _pendingChangeCount + _pendingDestructiveOps.length + _pendingSkillOps.length + _pendingFileMutations.size + (_pendingSkillsConfig !== null && _pendingSkillOps.length === 0 ? 1 : 0);
 }
 
 export function getPendingChangeDescriptions(): string[] {
@@ -334,12 +398,13 @@ export function getPendingChangeDescriptions(): string[] {
         ..._pendingDescriptions,
         ..._pendingDestructiveOps.map((op) => op.description),
         ..._pendingSkillOps.map((op) => op.description),
+        ...[..._pendingFileMutations.values()].map((mutation) => mutation.description),
         ...(_pendingSkillsConfig !== null && _pendingSkillOps.length === 0 ? ["Skill settings updated"] : []),
     ];
 }
 
 export function hasPendingChanges(): boolean {
-    return _pendingConfig !== null || _pendingDestructiveOps.length > 0 || _pendingSkillOps.length > 0 || _pendingSkillsConfig !== null;
+    return _pendingConfig !== null || _pendingDestructiveOps.length > 0 || _pendingSkillOps.length > 0 || _pendingFileMutations.size > 0 || _pendingSkillsConfig !== null;
 }
 
 export function commitPendingChanges(): { committed: boolean; configWritten: boolean; skillsConfigWritten: boolean; destructiveOpFailures: PendingDestructiveOpFailure[] } {
@@ -353,10 +418,11 @@ export function commitPendingChanges(): { committed: boolean; configWritten: boo
         writeSkillsConfig(_pendingSkillsConfig);
         _pendingSkillsConfig = null;
     }
+    const fileMutationResult = commitPendingFileMutations();
     _pendingConfig = null;
     _pendingChangeCount = 0;
     _pendingDescriptions = [];
-    return { committed: true, configWritten, skillsConfigWritten, destructiveOpFailures: [...skillResult.failed, ...destructiveOpResult.failed] };
+    return { committed: true, configWritten, skillsConfigWritten, destructiveOpFailures: [...skillResult.failed, ...destructiveOpResult.failed, ...fileMutationResult.failed] };
 }
 
 export function discardPendingChanges(): void {
@@ -364,6 +430,7 @@ export function discardPendingChanges(): void {
     discardPendingDestructiveOps();
     discardPendingSkillOps();
     discardPendingSkillsConfig();
+    discardPendingFileMutations();
 }
 
 /**
@@ -506,10 +573,14 @@ export function getAgentSessionsDir(agentId: string): string {
 
 // ─── File read helper — replaces existsSync + readFileSync pattern ───
 export function tryReadFile(path: string): string | null {
+    const staged = getPendingFileMutationContent(path);
+    if (staged !== undefined) return staged;
     try { return readFileSync(path, "utf-8"); } catch { return null; }
 }
 
 // ─── Async file read helper — for hot paths (session routes) to avoid blocking the event loop ───
 export async function tryReadFileAsync(path: string): Promise<string | null> {
+    const staged = getPendingFileMutationContent(path);
+    if (staged !== undefined) return staged;
     try { return await readFileAsync(path, "utf-8"); } catch { return null; }
 }

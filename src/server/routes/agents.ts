@@ -13,6 +13,7 @@ import {
     readDashboardConfig,
     writeDashboardConfig,
     stagePendingDestructiveOp,
+    stagePendingFileMutation,
     execAsync,
     execFileAsync,
     resolveHome,
@@ -20,7 +21,9 @@ import {
     getAgentWorkspace,
     getAgentDir,
     getAgentSessionsDir,
+    getPendingFileMutationContent,
     AGENTS_STATE_DIR,
+    DASHBOARD_CONFIG_PATH,
     WORKSPACE_MD_FILES,
     DASHBOARD_FLOW_DEFS_DIR,
     DASHBOARD_FLOW_STATE_DIR,
@@ -55,6 +58,12 @@ function cleanupFlowDefinitions(agentId: string): string[] {
         warnings.push(`Removed ${agentId} steps from flow definition ${file}`);
     }
     return warnings;
+}
+
+function effectiveFileExists(path: string): boolean {
+    const staged = getPendingFileMutationContent(path);
+    if (staged !== undefined) return staged !== null;
+    return existsSync(path);
 }
 
 function getFlowDefinitionByName(flowName: string): any | null {
@@ -332,8 +341,22 @@ export async function handleAgentRoutes(
         if (body.icon !== undefined) {
             const dashCfg = readDashboardConfig();
             if (!dashCfg.icons) dashCfg.icons = {};
-            dashCfg.icons[agentId] = body.icon;
-            writeDashboardConfig(dashCfg);
+            if (body.icon === null) {
+                delete dashCfg.icons[agentId];
+            } else {
+                dashCfg.icons[agentId] = body.icon;
+            }
+            if (defer) {
+                stagePendingFileMutation({
+                    key: `dashboard-config:${agentId}`,
+                    path: DASHBOARD_CONFIG_PATH,
+                    description: `Update dashboard icon for agent: ${agentId}`,
+                    kind: "dashboard-config",
+                    content: JSON.stringify(dashCfg, null, 2),
+                });
+            } else {
+                writeDashboardConfig(dashCfg);
+            }
             delete body.icon;
         }
 
@@ -398,11 +421,26 @@ export async function handleAgentRoutes(
 
         // Create workspace directory with default MD files
         const wsPath = resolveHome(workspace);
-        if (!existsSync(wsPath)) mkdirSync(wsPath, { recursive: true });
-        for (const f of WORKSPACE_MD_FILES) {
-            const fp = join(wsPath, f);
-            if (!existsSync(fp)) {
-                writeFileSync(fp, `# ${f.replace(".md", "")}\n\n`, "utf-8");
+        if (!defer) {
+            if (!existsSync(wsPath)) mkdirSync(wsPath, { recursive: true });
+            for (const f of WORKSPACE_MD_FILES) {
+                const fp = join(wsPath, f);
+                if (!effectiveFileExists(fp)) {
+                    writeFileSync(fp, `# ${f.replace(".md", "")}\n\n`, "utf-8");
+                }
+            }
+        } else {
+            for (const f of WORKSPACE_MD_FILES) {
+                const fp = join(wsPath, f);
+                if (!effectiveFileExists(fp)) {
+                    stagePendingFileMutation({
+                        key: `agent-workspace:${body.id}:${f}`,
+                        path: fp,
+                        description: `Create workspace file for agent ${body.id}: ${f}`,
+                        kind: "workspace-file",
+                        content: `# ${f.replace(".md", "")}\n\n`,
+                    });
+                }
             }
         }
 

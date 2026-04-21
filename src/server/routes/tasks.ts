@@ -12,6 +12,7 @@ import {
     stageConfig,
     readEffectiveConfig,
     stagePendingDestructiveOp,
+    stagePendingFileMutation,
     getPendingDestructiveOps,
     getAgentWorkspace,
     execAsync,
@@ -25,6 +26,7 @@ import {
     DASHBOARD_FLOW_DEFS_DIR,
     DASHBOARD_FLOW_STATE_DIR,
     DASHBOARD_FLOW_HISTORY_DIR,
+    getPendingFileMutationContent,
 } from "../api-utils.js";
 
 // ─── Cron jobs — gateway stores them in ~/.openclaw/cron/jobs.json ───
@@ -682,28 +684,32 @@ export async function handleTaskRoutes(
         // Check flow name uniqueness against existing files in Tasks/ (skip if overwrite flag is set)
         const { flowFile } = deriveFileNames(flow.name);
         const overwrite = body?.overwrite === true;
-        if (!overwrite && existsSync(DASHBOARD_FLOW_DEFS_DIR)) {
-            const flowFilePath = join(DASHBOARD_FLOW_DEFS_DIR, flowFile);
-            if (existsSync(flowFilePath)) {
-                json(res, 409, { error: `Flow file already exists: Tasks/${flowFile}` });
-                return true;
-            }
-        }
-
-        // Create Tasks/ directory if it doesn't exist
-        try {
-            if (!existsSync(DASHBOARD_FLOW_DEFS_DIR)) {
-                mkdirSync(DASHBOARD_FLOW_DEFS_DIR, { recursive: true });
-            }
-        } catch (e: any) {
-            json(res, 500, { error: `Failed to create Tasks directory: ${e.message}` });
+        const defer = url.searchParams?.get("defer") === "1";
+        const flowFilePath = join(DASHBOARD_FLOW_DEFS_DIR, flowFile);
+        const stagedFlowContent = getPendingFileMutationContent(flowFilePath);
+        const flowExistsEffectively = stagedFlowContent !== undefined ? stagedFlowContent !== null : existsSync(flowFilePath);
+        if (!overwrite && flowExistsEffectively) {
+            json(res, 409, { error: `Flow file already exists: Tasks/${flowFile}` });
             return true;
         }
 
-        // Generate and write flow definition file (no per-flow tool file needed)
+        // Generate and write/stage flow definition file (no per-flow tool file needed)
         try {
             const flowContent = generateFlowDefinitionFile(flow);
-            writeFileSync(join(DASHBOARD_FLOW_DEFS_DIR, flowFile), flowContent, "utf-8");
+            if (defer) {
+                stagePendingFileMutation({
+                    key: `flow-definition:${flow.agentId}:${flow.name}`,
+                    path: flowFilePath,
+                    description: `Save flow definition: ${flow.name}`,
+                    kind: "flow-definition",
+                    content: flowContent,
+                });
+            } else {
+                if (!existsSync(DASHBOARD_FLOW_DEFS_DIR)) {
+                    mkdirSync(DASHBOARD_FLOW_DEFS_DIR, { recursive: true });
+                }
+                writeFileSync(flowFilePath, flowContent, "utf-8");
+            }
         } catch (e: any) {
             json(res, 500, { error: `Failed to write flow file: ${e.message}` });
             return true;
@@ -711,7 +717,6 @@ export async function handleTaskRoutes(
 
         // Auto-add run_task_flow to the agent's alsoAllow if not already present
         try {
-            const defer = url.searchParams?.get("defer") === "1";
             const config = defer ? readEffectiveConfig() : readConfig();
             const agents = config.agents?.list || [];
             const agent = agents.find((a: any) => a.id === flow.agentId);
@@ -1086,16 +1091,6 @@ export async function handleTaskRoutes(
                             json(res, 404, { error: "Flow definition not found" });
                             return true;
                         }
-                        // Persist the definition so future loads hit the fast path
-                        try {
-                            if (!existsSync(DASHBOARD_FLOW_DEFS_DIR)) {
-                                mkdirSync(DASHBOARD_FLOW_DEFS_DIR, { recursive: true });
-                            }
-                            const { flowFile } = deriveFileNames(flow.name);
-                            const flowContent = generateFlowDefinitionFile(flow);
-                            writeFileSync(join(DASHBOARD_FLOW_DEFS_DIR, flowFile), flowContent, "utf-8");
-                            clearFlowDefinitionDeletedMarker(join(DASHBOARD_FLOW_DEFS_DIR, flowFile));
-                        } catch { /* write failed — still return the parsed flow */ }
                         json(res, 200, { flow });
                         return true;
                     }

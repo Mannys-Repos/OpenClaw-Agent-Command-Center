@@ -15,6 +15,7 @@ import {
     getPendingChangeCount,
     getPendingChangeDescriptions,
     readEffectiveConfig,
+    parseConfigText,
     execAsync,
     tryReadFile,
     CONFIG_PATH,
@@ -38,8 +39,6 @@ export async function handleConfigRoutes(
         return true;
     }
     if (path === "/config/raw" && method === "GET") {
-        // If there are pending staged changes, return those as the raw JSON
-        // so the editor shows what the user has been working on, not the stale disk version.
         const pending = getPendingConfig();
         const hasPending = getPendingChangeCount() > 0;
         if (pending) {
@@ -49,8 +48,8 @@ export async function handleConfigRoutes(
         }
         const raw = tryReadFile(CONFIG_PATH);
         if (raw === null) { json(res, 200, { raw: "{}", configError: null, hasPending }); return true; }
-        readConfig(); // trigger parse to populate error
-        json(res, 200, { raw, configError: getConfigError(), hasPending });
+        const parsed = parseConfigText(raw);
+        json(res, 200, { raw, configError: parsed.error, hasPending });
         return true;
     }
     if (path === "/config" && method === "PUT") {
@@ -117,7 +116,8 @@ export async function handleConfigRoutes(
         if (result.skillsConfigWritten) {
             syncSkillsToAllWorkspaces(readConfig());
         }
-        if (result.destructiveOpFailures.length > 0) {
+        const failures = [...result.destructiveOpFailures];
+        if (failures.length > 0) {
             json(res, 200, {
                 ok: false,
                 committed: true,
@@ -126,8 +126,8 @@ export async function handleConfigRoutes(
                 error: result.configWritten
                     ? "Config was saved, but some destructive operations failed"
                     : "Failed to apply staged destructive operations",
-                destructiveOpFailures: result.destructiveOpFailures,
-                failures: result.destructiveOpFailures,
+                destructiveOpFailures: failures,
+                failures,
             });
             return true;
         }
