@@ -498,7 +498,8 @@ export function execAsync(cmd: string, opts: any = {}): Promise<string> {
     return new Promise((resolve, reject) => {
         exec(cmd, { encoding: "utf-8", ...opts }, (err: any, stdout: string | Buffer, stderr: string | Buffer) => {
             if (err) {
-                reject(new Error(String(stderr || stdout || err.message || "Command failed")));
+                const message = String(stderr || stdout || err.message || "Command failed");
+                reject(new Error(message.length > 512 ? message.slice(0, 511).trimEnd() + "…" : message));
             } else {
                 resolve(String(stdout || ""));
             }
@@ -510,7 +511,8 @@ export function execFileAsync(file: string, args: string[], opts: any = {}): Pro
     return new Promise((resolve, reject) => {
         execFile(file, args, { encoding: "utf-8", ...opts }, (err: any, stdout: string | Buffer, stderr: string | Buffer) => {
             if (err) {
-                reject(new Error(String(stderr || stdout || err.message || "Command failed")));
+                const message = String(stderr || stdout || err.message || "Command failed");
+                reject(new Error(message.length > 512 ? message.slice(0, 511).trimEnd() + "…" : message));
             } else {
                 resolve(String(stdout || ""));
             }

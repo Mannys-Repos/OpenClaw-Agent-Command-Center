@@ -1,4 +1,4 @@
-import { describe, it, expect } from "vitest";
+import { describe, it, expect, vi } from "vitest";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import * as vm from "node:vm";
@@ -45,5 +45,36 @@ describe("dashboard task visibility", () => {
         expect(html).toContain("Running");
         expect(html).toContain("Decision: send follow-ups");
         expect(html).toContain("Session session-123");
+    });
+
+    it("shows an empty state when registered flows are loaded but absent", () => {
+        const source = readFileSync(DASHBOARD_JS_PATH, "utf-8");
+        const start = source.indexOf("var _registeredFlowsCache=[];");
+        const end = source.indexOf("function _renderRegisteredFlowCard(", start);
+        const flowsBlock = source.slice(start, end);
+
+        const api = vi.fn();
+        const ctx: any = {
+            _registeredFlowsCache: [],
+            _pendingFlowsCache: [],
+            _flowHistoryCache: [],
+            renderTasksPanel: vi.fn(),
+            api,
+            Q: () => null,
+            esc: (value: unknown) => String(value ?? ""),
+            agentToneClass: () => "",
+        };
+
+        vm.runInNewContext(flowsBlock, ctx);
+        ctx._registeredFlowsCache = [];
+        ctx._registeredFlowsLoaded = true;
+        ctx._registeredFlowsLoading = false;
+        ctx._registeredFlowsError = "";
+
+        const html = ctx.renderFlowsSection();
+
+        expect(html).toContain("No registered flows yet");
+        expect(html).not.toContain("Loading…");
+        expect(api).not.toHaveBeenCalled();
     });
 });

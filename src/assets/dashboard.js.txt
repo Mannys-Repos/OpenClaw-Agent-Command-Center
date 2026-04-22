@@ -6727,6 +6727,9 @@ function showTasksPage(){
   location.hash="tasks";
   if(!_calAnchor)_calAnchor=new Date();
   _registeredFlowsCache=[]; // reset so it re-fetches
+  _registeredFlowsLoaded=false;
+  _registeredFlowsLoading=false;
+  _registeredFlowsError="";
   _tasksLoading=true;
   _startTasksPoll();
   openPagePanel("📋 Tasks",
@@ -6817,19 +6820,39 @@ function switchTasksSection(s){
 
 // ── Flows Section ──
 var _registeredFlowsCache=[];
+var _registeredFlowsLoaded=false;
+var _registeredFlowsLoading=false;
+var _registeredFlowsError="";
+function _loadRegisteredFlows(){
+  if(_registeredFlowsLoaded||_registeredFlowsLoading)return;
+  _registeredFlowsLoading=true;
+  api("tasks/flows/definitions",{_quiet:true}).then(function(d){
+    _registeredFlowsCache=Array.isArray(d.flows)?d.flows:[];
+    _registeredFlowsLoaded=true;
+    _registeredFlowsLoading=false;
+    _registeredFlowsError="";
+    renderTasksPanel();
+  }).catch(function(){
+    _registeredFlowsCache=[];
+    _registeredFlowsLoaded=true;
+    _registeredFlowsLoading=false;
+    _registeredFlowsError="Unable to load registered flows.";
+    renderTasksPanel();
+  });
+}
 function renderFlowsSection(){
   var h='';
 
   // ── Section 0: Registered Flow Definitions ──
   h+='<div class="tasks-subsection">';
   h+='<div class="tasks-subsection-header">Registered Flows</div>';
-  if(_registeredFlowsCache.length===0){
+  if(!_registeredFlowsLoaded){
     h+='<div class="section-desc">Loading…</div>';
-    // Fetch flow definitions
-    api("tasks/flows/definitions",{_quiet:true}).then(function(d){
-      _registeredFlowsCache=d.flows||[];
-      renderTasksPanel();
-    }).catch(function(){_registeredFlowsCache=[];});
+    _loadRegisteredFlows();
+  }else if(_registeredFlowsError){
+    h+='<div class="empty"><div class="empty-icon">⚠</div>'+esc(_registeredFlowsError)+'<br><span class="section-desc">Try again in a moment.</span></div>';
+  }else if(_registeredFlowsCache.length===0){
+    h+='<div class="empty"><div class="empty-icon">📋</div>No registered flows yet.<br><span class="section-desc">Define a flow in the Orchestrator tab to get started.</span></div>';
   }else{
     h+='<div class="tasks-list">';
     _registeredFlowsCache.forEach(function(f){

@@ -29,6 +29,16 @@ import {
     getPendingFileMutationContent,
 } from "../api-utils.js";
 
+const REQUIRED_ORCHESTRATOR_TOOL_IDS = [
+    TASK_FLOW_TOOL_ID,
+    "sessions_spawn",
+    "sessions_send",
+    "sessions_list",
+    "sessions_history",
+];
+
+const LAST_FLOW_CLEANUP_TOOL_IDS = [TASK_FLOW_TOOL_ID];
+
 // ─── Cron jobs — gateway stores them in ~/.openclaw/cron/jobs.json ───
 const CRON_DIR = join(OPENCLAW_DIR, "cron");
 const CRON_JOBS_PATH = join(CRON_DIR, "jobs.json");
@@ -715,7 +725,7 @@ export async function handleTaskRoutes(
             return true;
         }
 
-        // Auto-add run_task_flow to the agent's alsoAllow if not already present
+        // Auto-add the required orchestrator tools to the agent's alsoAllow if not already present
         try {
             const config = defer ? readEffectiveConfig() : readConfig();
             const agents = config.agents?.list || [];
@@ -723,11 +733,15 @@ export async function handleTaskRoutes(
             if (agent) {
                 const tools = agent.tools || {};
                 const also: string[] = tools.alsoAllow || tools.allow || [];
-                if (!also.includes(TASK_FLOW_TOOL_ID)) {
+                const nextAlso = [...also];
+                for (const toolId of REQUIRED_ORCHESTRATOR_TOOL_IDS) {
+                    if (!nextAlso.includes(toolId)) nextAlso.push(toolId);
+                }
+                if (nextAlso.length !== also.length) {
                     if (!agent.tools) agent.tools = {};
-                    agent.tools.alsoAllow = [...also, TASK_FLOW_TOOL_ID];
+                    agent.tools.alsoAllow = nextAlso;
                     if (defer) {
-                        stageConfig(config, "Add run_task_flow tool to agent: " + flow.agentId);
+                        stageConfig(config, "Add orchestrator tools to agent: " + flow.agentId);
                     } else {
                         writeConfig(config);
                     }
@@ -756,22 +770,16 @@ export async function handleTaskRoutes(
         if (cached) { json(res, 200, cached); return true; }
 
         try {
-            const out = await execAsync("openclaw tasks flow list --json", { timeout: 10000 });
+            const out = await execAsync("openclaw tasks flow list --json", { timeout: 10000, maxBuffer: 10 * 1024 * 1024 });
             const trimmed = (out || "").trim();
-            if (!trimmed) {
-                const result = { flows: [] };
-                setCachedCli("tasks-flows", result);
-                json(res, 200, result);
-                return true;
-            }
-            const parsed = JSON.parse(trimmed);
+            const parsed = trimmed ? JSON.parse(trimmed) : [];
             const flows: WorkflowExecutionRecord[] = Array.isArray(parsed) ? parsed : (parsed.flows || parsed.executions || []);
             const result = { flows };
             setCachedCli("tasks-flows", result);
             json(res, 200, result);
             return true;
         } catch (e: any) {
-            json(res, 500, { error: `Task flow command failed: ${e.message}` });
+            json(res, 200, { flows: [] });
             return true;
         }
     }
@@ -1138,7 +1146,8 @@ export async function handleTaskRoutes(
             }
         } catch { }
 
-        // Remove run_task_flow from alsoAllow if no other flows remain for this agent
+        // Be conservative here: we can safely remove the flow runner, but sessions_* tools may
+        // have been granted manually and we cannot distinguish them from auto-added permissions.
         if (!hasOtherFlows) {
             try {
                 const config = defer ? readEffectiveConfig() : readConfig();
@@ -1147,12 +1156,12 @@ export async function handleTaskRoutes(
                 if (agent) {
                     const tools = agent.tools || {};
                     const also: string[] = tools.alsoAllow || tools.allow || [];
-                    const idx = also.indexOf(TASK_FLOW_TOOL_ID);
-                    if (idx >= 0) {
+                    const nextAlso = also.filter((t: string) => !LAST_FLOW_CLEANUP_TOOL_IDS.includes(t));
+                    if (nextAlso.length !== also.length) {
                         if (!agent.tools) agent.tools = {};
-                        agent.tools.alsoAllow = also.filter((t: string) => t !== TASK_FLOW_TOOL_ID);
+                        agent.tools.alsoAllow = nextAlso;
                         if (defer) {
-                            stageConfig(config, "Remove run_task_flow tool from agent: " + agentId);
+                            stageConfig(config, "Remove orchestrator tools from agent: " + agentId);
                         } else {
                             writeConfig(config);
                         }

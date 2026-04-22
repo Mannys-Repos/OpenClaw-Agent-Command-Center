@@ -9,6 +9,7 @@ let mockFlowDefs: Record<string, string> = {};
 let mockFlowStates: Record<string, string> = {};
 let mockReadFiles: Record<string, string> = {};
 let mockDeletedMarkers: Record<string, string> = {};
+let mockExecAsync = vi.fn(async () => "");
 
 // ─── Mock api-utils before importing tasks ───
 vi.mock("../../api-utils.js", () => {
@@ -30,7 +31,7 @@ vi.mock("../../api-utils.js", () => {
         getConfigError: vi.fn(() => null),
         readDashboardConfig: vi.fn(() => ({})),
         writeDashboardConfig: vi.fn(),
-        execAsync: vi.fn(async () => ""),
+        execAsync: mockExecAsync,
         execFileAsync: vi.fn(async () => ""),
         resolveHome: vi.fn((p: string) => p.replace("~", "/tmp/fakehome")),
         tryReadFile: vi.fn((p: string) => {
@@ -362,6 +363,53 @@ describe("GET /api/tasks normalized run visibility", () => {
     });
 });
 
+describe("GET /api/tasks/flows", () => {
+    let handleTaskRoutes: typeof import("../tasks.js").handleTaskRoutes;
+
+    beforeEach(async () => {
+        vi.resetModules();
+        mockExecAsync.mockReset();
+        mockExecAsync.mockResolvedValue(JSON.stringify([{ id: "flow-1", status: "completed" }]));
+
+        const mod = await import("../tasks.js");
+        handleTaskRoutes = mod.handleTaskRoutes;
+    });
+
+    afterEach(() => {
+        vi.restoreAllMocks();
+    });
+
+    it("uses a larger buffer for flow listing output", async () => {
+        const req = createMockReq("GET");
+        const res = createMockRes();
+        const url = new URL("http://localhost/api/tasks/flows");
+
+        const handled = await handleTaskRoutes(req, res, url, "/tasks/flows");
+
+        expect(handled).toBe(true);
+        expect(res.statusCode).toBe(200);
+        expect(res._body.flows.length).toBe(1);
+        expect(mockExecAsync).toHaveBeenCalledWith(
+            "openclaw tasks flow list --json",
+            expect.objectContaining({ timeout: 10000, maxBuffer: 10 * 1024 * 1024 }),
+        );
+    });
+
+    it("falls back to an empty flow list when the CLI output is oversized", async () => {
+        mockExecAsync.mockRejectedValueOnce(new Error("x".repeat(5000)));
+
+        const req = createMockReq("GET");
+        const res = createMockRes();
+        const url = new URL("http://localhost/api/tasks/flows");
+
+        const handled = await handleTaskRoutes(req, res, url, "/tasks/flows");
+
+        expect(handled).toBe(true);
+        expect(res.statusCode).toBe(200);
+        expect(res._body).toEqual({ flows: [] });
+    });
+});
+
 describe("GET /api/tasks/flows/definitions", () => {
     let handleTaskRoutes: typeof import("../tasks.js").handleTaskRoutes;
 
@@ -508,6 +556,73 @@ describe("POST /api/tasks/flows/save", () => {
         expect(writeFileSync).not.toHaveBeenCalled();
     });
 
+    it("auto-enables the full orchestrator tool set when saving a flow", async () => {
+        const { parseBody: parseBodyMock, writeConfig } = await import("../../api-utils.js");
+        (parseBodyMock as any).mockResolvedValue({
+            flow: {
+                name: "solo",
+                agentId: "alpha",
+                steps: [{ id: "step1", agentId: "alpha", description: "", humanIntervention: false }],
+            },
+        });
+
+        const req = createMockReq("POST");
+        const res = createMockRes();
+        const url = new URL("http://localhost/api/tasks/flows/save");
+
+        const handled = await handleTaskRoutes(req, res, url, "/tasks/flows/save");
+
+        expect(handled).toBe(true);
+        expect(res.statusCode).toBe(200);
+        expect(writeConfig).toHaveBeenCalledTimes(1);
+        const savedConfig = (writeConfig as any).mock.calls.at(-1)[0];
+        expect(savedConfig.agents.list[0].tools.alsoAllow).toEqual([
+            "run_task_flow",
+            "sessions_spawn",
+            "sessions_send",
+            "sessions_list",
+            "sessions_history",
+        ]);
+    });
+
+    it("preserves existing allow entries while staging the full orchestrator tool set", async () => {
+        mockConfig = {
+            agents: {
+                list: [{ id: "alpha", tools: { allow: ["read"] } }],
+            },
+        };
+
+        const { parseBody: parseBodyMock, stageConfig, writeConfig } = await import("../../api-utils.js");
+        (parseBodyMock as any).mockResolvedValue({
+            flow: {
+                name: "solo",
+                agentId: "alpha",
+                steps: [{ id: "step1", agentId: "alpha", description: "", humanIntervention: false }],
+            },
+        });
+
+        const req = createMockReq("POST");
+        const res = createMockRes();
+        const url = new URL("http://localhost/api/tasks/flows/save?defer=1");
+
+        const handled = await handleTaskRoutes(req, res, url, "/tasks/flows/save");
+
+        expect(handled).toBe(true);
+        expect(res.statusCode).toBe(200);
+        expect(stageConfig).toHaveBeenCalledTimes(1);
+        expect(writeConfig).not.toHaveBeenCalled();
+        const stagedConfig = (stageConfig as any).mock.calls.at(-1)[0];
+        expect(stagedConfig.agents.list[0].tools.allow).toEqual(["read"]);
+        expect(stagedConfig.agents.list[0].tools.alsoAllow).toEqual([
+            "read",
+            "run_task_flow",
+            "sessions_spawn",
+            "sessions_send",
+            "sessions_list",
+            "sessions_history",
+        ]);
+    });
+
     it("does not write a fallback flow definition when loading from AGENTS.md", async () => {
         const agentsMdPath = "/tmp/ws/alpha/AGENTS.md";
         mockReadFiles[agentsMdPath] = [
@@ -545,7 +660,7 @@ describe("DELETE /api/tasks/flows/definition/:agentId/:flowName", () => {
         mockConfig = {
             agents: {
                 list: [
-                    { id: "alpha", name: "Alpha", tools: { alsoAllow: ["read", "run_task_flow"] } },
+                    { id: "alpha", name: "Alpha", tools: { alsoAllow: ["read", "run_task_flow", "sessions_spawn", "sessions_send", "sessions_list", "sessions_history"] } },
                 ],
             },
         };
@@ -561,7 +676,7 @@ describe("DELETE /api/tasks/flows/definition/:agentId/:flowName", () => {
         vi.restoreAllMocks();
     });
 
-    it("disables run_task_flow when deleting the last flow for an agent", async () => {
+    it("removes only run_task_flow when deleting the last flow for an agent", async () => {
         mockFlowDefs["/tmp/fake-flows/definitions/solo.flow.ts"] =
             `// controllerId: "alpha/start_solo"\n` +
             `flow.runTask<{ status: string }>({ id: "step1", agentId: "alpha", input: {} });\n`;
@@ -578,7 +693,13 @@ describe("DELETE /api/tasks/flows/definition/:agentId/:flowName", () => {
         const { stageConfig } = await import("../../api-utils.js");
         expect(stageConfig).toHaveBeenCalled();
         const stagedConfig = (stageConfig as any).mock.calls.at(-1)[0];
-        expect(stagedConfig.agents.list[0].tools.alsoAllow).not.toContain("run_task_flow");
+        expect(stagedConfig.agents.list[0].tools.alsoAllow).toEqual([
+            "read",
+            "sessions_spawn",
+            "sessions_send",
+            "sessions_list",
+            "sessions_history",
+        ]);
     });
 
     it("keeps deleted flow definitions hidden even when AGENTS.md can rebuild them", async () => {
