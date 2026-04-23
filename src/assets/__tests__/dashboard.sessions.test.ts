@@ -69,7 +69,7 @@ function sessionUiCtx() {
         },
         _renderSessionRow({ session, key, agentId, title, secondary, kind }: any) {
             const resolvedKey = key || session?.threadId || session?.sessionKey || session?.id || "";
-            return `<div class="session-card${kind === "main" ? " session-card-main" : ""}" data-session-action="${kind === "main" ? "open-main" : "open-thread"}" data-session-key="${resolvedKey}" data-agent-id="${agentId || ""}"><button class="btn btn-sm btn-accent">${kind === "main" ? "Open Chat" : "Open"}</button><button class="btn btn-sm" data-session-action="${kind === "main" ? "manage-main" : "manage-thread"}">Actions</button>${title || ""}${secondary || ""}</div>`;
+            return `<div class="session-card${kind === "main" ? " session-card-main" : ""}" data-session-action="${kind === "main" ? "open-main" : "open-thread"}" data-session-key="${resolvedKey}" data-agent-id="${agentId || ""}"><button class="btn btn-sm btn-accent">${kind === "main" ? "Open Chat" : "Open"}</button><button class="btn btn-sm btn-danger" data-session-action="${kind === "main" ? "clear-main" : "end-session"}">${kind === "main" ? "Clear session" : "End"}</button>${title || ""}${secondary || ""}</div>`;
         },
     };
 }
@@ -325,8 +325,8 @@ describe("dashboard sessions rework", () => {
 
         expect(html).toContain('class="session-card');
         expect(html).toContain('Open Chat');
-        expect(html).toContain('data-session-action="manage-thread"');
-        expect(html).toContain('data-session-action="manage-main"');
+        expect(html).toContain('data-session-action="clear-main"');
+        expect(html).toContain('data-session-action="end-session"');
     });
 
     it("uses data attributes for session actions instead of inline JS strings", () => {
@@ -396,11 +396,16 @@ describe("dashboard sessions rework", () => {
         expect(html).toContain('data-session-action="refresh"');
         expect(html).toContain('data-session-action="open-main"');
         expect(html).toContain('data-session-action="open-thread"');
-        expect(html).toContain('data-session-action="manage-main"');
-        expect(html).toContain('data-session-action="manage-thread"');
-        expect(html).toContain('data-session-action="manage-subagents"');
-        expect(html).toContain('data-session-action="set-filter"');
+        expect(html).toContain('data-session-action="clear-main"');
+        expect(html).toContain('data-session-action="end-session"');
+        expect(html).toContain('data-session-action="end-subagents"');
         expect(html).toContain('data-session-control="query"');
+        expect(html).not.toContain('data-session-control="sort"');
+        expect(html).not.toContain('data-session-action="set-filter"');
+        expect(html).not.toContain('session-summary-pill');
+        expect(html).not.toContain('data-session-action="manage-main"');
+        expect(html).not.toContain('data-session-action="manage-thread"');
+        expect(html).not.toContain('data-session-action="manage-subagents"');
         expect(html).not.toContain('onclick="openSessionChat');
         expect(html).not.toContain('onclick="event.stopPropagation();openSessionChat');
         expect(html).not.toContain('onclick="refreshSessions');

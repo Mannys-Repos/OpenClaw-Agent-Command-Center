@@ -1698,74 +1698,22 @@ label {
 }
 
 .session-toolbar {
-  display: grid;
-  gap: 10px;
-  margin-bottom: 18px;
-  padding: 14px;
-  border: 1px solid var(--border);
-  border-radius: var(--radius);
-  background: var(--bg1)
+  margin-bottom: 14px
 }
 
-.session-toolbar-top {
-  display: flex;
-  gap: 10px;
-  align-items: center
-}
-
-.session-search-input,
-.session-sort-select {
+.session-search-input {
   border: 1px solid var(--border);
   background: var(--bg0);
   color: var(--tx1);
   border-radius: 10px;
   min-height: 40px;
   padding: 9px 12px;
-  font-size: var(--fs-sm)
+  font-size: var(--fs-sm);
+  width: 100%
 }
 
 .session-search-input {
-  flex: 1;
   min-width: 0
-}
-
-.session-sort-select {
-  min-width: 150px
-}
-
-.session-filter-row,
-.session-summary-strip {
-  display: flex;
-  gap: 8px;
-  flex-wrap: wrap
-}
-
-.session-filter-chip {
-  border-color: var(--border);
-  background: var(--bg2);
-  color: var(--tx2)
-}
-
-.session-filter-chip.active {
-  border-color: var(--accent);
-  background: var(--accentbg);
-  color: var(--accent)
-}
-
-.session-summary-pill {
-  display: inline-flex;
-  align-items: baseline;
-  gap: 8px;
-  padding: 8px 12px;
-  border-radius: 999px;
-  background: var(--bg2);
-  color: var(--tx2);
-  font-size: var(--fs-sm)
-}
-
-.session-summary-pill strong {
-  color: var(--tx1);
-  font-size: var(--fs-base)
 }
 
 .sessions-section {
@@ -2005,16 +1953,6 @@ label {
 .session-subagent-actions {
   gap: 4px;
   margin-left: auto
-}
-
-.session-action-modal {
-  display: grid;
-  gap: 10px
-}
-
-.btn-block {
-  width: 100%;
-  justify-content: center
 }
 
 .all-sessions-list,
@@ -3367,15 +3305,9 @@ label {
     width: 100%
   }
 
-  .session-toolbar-top,
   .session-card-mainline {
     flex-direction: column;
     align-items: stretch
-  }
-
-  .session-sort-select {
-    min-width: 0;
-    width: 100%
   }
 
   .session-card-actions {
