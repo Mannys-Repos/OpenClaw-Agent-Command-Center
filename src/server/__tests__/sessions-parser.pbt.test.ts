@@ -36,6 +36,20 @@ const INTERNAL_SESSION_MARKERS = [
     "HEARTBEAT_OK",
 ];
 
+function isInternalLogLine(line: string): boolean {
+    const text = line.trim();
+    return /^\[plugins?\](?:\s|$)/i.test(text)
+        || /^\[agent-dashboard\](?:\s|$)/i.test(text)
+        || /^plugin registered(?:\s|$)/i.test(text)
+        || /^loading\b.*\bplugin\b/i.test(text)
+        || /^memory-lancedb:\s*plugin registered\b/i.test(text);
+}
+
+function isOnlyInternalLogLines(text: string): boolean {
+    const lines = text.split(/\r?\n/).map((line) => line.trim()).filter(Boolean);
+    return lines.length > 0 && lines.every(isInternalLogLine);
+}
+
 function isInternalSessionMessage(message: { role?: string; content?: string | unknown[]; internal?: boolean; isInternal?: boolean }): boolean {
     if (message.internal === true || message.isInternal === true) return true;
     const role = message.role || "";
@@ -44,7 +58,7 @@ function isInternalSessionMessage(message: { role?: string; content?: string | u
     const text = Array.isArray(content)
         ? content.map((part) => typeof part === "string" ? part : typeof (part as any)?.thinking === "string" ? (part as any).thinking : typeof (part as any)?.text === "string" ? (part as any).text : "").join("\n")
         : String(content ?? "");
-    return INTERNAL_SESSION_MARKERS.some((marker) => text.includes(marker));
+    return INTERNAL_SESSION_MARKERS.some((marker) => text.includes(marker)) || isOnlyInternalLogLines(text);
 }
 
 /** Generate a blank line (empty or whitespace-only) */
@@ -242,6 +256,20 @@ describe("Property 6: JSONL Parsing Correctness", () => {
         expect(result.messages[0].internal).toBe(true);
         expect(result.messages[1].internal).toBe(true);
         expect(result.messages[2].internal).toBe(false);
+    });
+
+    it("marks plugin log-only chatter as internal without hiding mixed assistant replies", () => {
+        const filePath = writeTempJsonl([
+            { tag: "header", line: JSON.stringify({ type: "session", agentId: "alpha", channel: "dashboard", sessionId: "s-3" }), agentId: "alpha", channel: "dashboard" },
+            { tag: "message", line: JSON.stringify({ type: "message", message: { role: "assistant", content: "[plugins] [agent-dashboard] Loading Agent Dashboard plugin...\n[plugins] memory-lancedb: plugin registered (db: /tmp/db, lazy init)" }, timestamp: "2026-04-22T10:05:00Z" }), message: { role: "assistant", content: "[plugins] [agent-dashboard] Loading Agent Dashboard plugin...\n[plugins] memory-lancedb: plugin registered (db: /tmp/db, lazy init)" }, timestamp: "2026-04-22T10:05:00Z" },
+            { tag: "message", line: JSON.stringify({ type: "message", message: { role: "assistant", content: "[plugins] [agent-dashboard] Loading Agent Dashboard plugin...\nVisible reply" }, timestamp: "2026-04-22T10:06:00Z" }), message: { role: "assistant", content: "[plugins] [agent-dashboard] Loading Agent Dashboard plugin...\nVisible reply" }, timestamp: "2026-04-22T10:06:00Z" },
+        ]);
+
+        const result = parseSessionJsonl(filePath);
+        expect(result.messages[0].internal).toBe(true);
+        expect(result.messages[0].isInternal).toBe(true);
+        expect(result.messages[1].internal).toBe(false);
+        expect(result.messages[1].isInternal).toBe(false);
     });
 });
 

@@ -433,7 +433,7 @@ describe("dashboard sessions rework", () => {
 
     it("hides backend-classified internal chat messages even without marker text", () => {
         const source = readFileSync(DASHBOARD_JS_PATH, "utf-8");
-        const block = extractRange(source, "_chatMessageParts", "closeChatView");
+        const block = extractRange(source, "_chatTextHasInternalMarker", "closeChatView");
 
         const el: any = {
             innerHTML: "",
@@ -461,7 +461,7 @@ describe("dashboard sessions rework", () => {
 
     it("hides heartbeat orchestration chatter with Hide Internal", () => {
         const source = readFileSync(DASHBOARD_JS_PATH, "utf-8");
-        const block = extractRange(source, "_chatMessageParts", "closeChatView");
+        const block = extractRange(source, "_chatTextHasInternalMarker", "closeChatView");
 
         const el: any = {
             innerHTML: "",
@@ -491,7 +491,7 @@ describe("dashboard sessions rework", () => {
 
     it("hides heartbeat markers from untyped array thinking parts with Hide Internal", () => {
         const source = readFileSync(DASHBOARD_JS_PATH, "utf-8");
-        const block = extractRange(source, "_chatMessageParts", "closeChatView");
+        const block = extractRange(source, "_chatTextHasInternalMarker", "closeChatView");
 
         const el: any = {
             innerHTML: "",
@@ -517,6 +517,66 @@ describe("dashboard sessions rework", () => {
         expect(el.innerHTML).toContain("Visible after");
     });
 
+    it("hides plugin-only assistant chatter with Hide Internal", () => {
+        const source = readFileSync(DASHBOARD_JS_PATH, "utf-8");
+        const block = extractRange(source, "_chatTextHasInternalMarker", "closeChatView");
+
+        const el: any = {
+            innerHTML: "",
+            scrollHeight: 200,
+            scrollTop: 0,
+            clientHeight: 150,
+        };
+        const ctx: any = {
+            _chatHideInternal: true,
+            _chatLastMsgs: null,
+            Q: (id: string) => (id === "chat-msgs" ? el : null),
+            fmtTime: (value: string) => value,
+            esc: (value: unknown) => String(value ?? ""),
+        };
+
+        vm.runInNewContext(block, ctx);
+        ctx._renderChatMessages([
+            { role: "assistant", content: "[plugins] [agent-dashboard] Loading Agent Dashboard plugin..." },
+            { role: "assistant", content: "[plugins] memory-lancedb: plugin registered (db: /home/manthan/.openclaw/memory/lancedb, lazy init)" },
+            { role: "assistant", content: "Visible reply" },
+        ], false);
+
+        expect(el.innerHTML).not.toContain("[plugins]");
+        expect(el.innerHTML).not.toContain("memory-lancedb");
+        expect(el.innerHTML).toContain("Visible reply");
+    });
+
+    it("strips plugin chatter while preserving mixed assistant answers", () => {
+        const source = readFileSync(DASHBOARD_JS_PATH, "utf-8");
+        const block = extractRange(source, "_chatTextHasInternalMarker", "closeChatView");
+
+        const el: any = {
+            innerHTML: "",
+            scrollHeight: 200,
+            scrollTop: 0,
+            clientHeight: 150,
+        };
+        const ctx: any = {
+            _chatHideInternal: true,
+            _chatLastMsgs: null,
+            Q: (id: string) => (id === "chat-msgs" ? el : null),
+            fmtTime: (value: string) => value,
+            esc: (value: unknown) => String(value ?? ""),
+        };
+
+        vm.runInNewContext(block, ctx);
+        ctx._renderChatMessages([
+            { role: "assistant", content: "[plugins] [agent-dashboard] Loading Agent Dashboard plugin...\n[plugins] memory-lancedb: plugin registered (db: /tmp/db)\nHey! What's up?" },
+            { role: "assistant", content: ["[plugins] [agent-dashboard] Loading Agent Dashboard plugin...", { text: "Clean array answer" }] },
+        ], false);
+
+        expect(el.innerHTML).not.toContain("[plugins]");
+        expect(el.innerHTML).not.toContain("memory-lancedb");
+        expect(el.innerHTML).toContain("Hey! What's up?");
+        expect(el.innerHTML).toContain("Clean array answer");
+    });
+
     it("uses cursor delta polling instead of count-only guards", () => {
         const source = readFileSync(DASHBOARD_JS_PATH, "utf-8");
         expect(source).toContain("?after=");
@@ -530,7 +590,7 @@ describe("dashboard sessions rework", () => {
 
     it("appends polling deltas without replacing existing chat DOM", () => {
         const source = readFileSync(DASHBOARD_JS_PATH, "utf-8");
-        const block = extractRange(source, "_chatMessageParts", "_openChatFullscreen");
+        const block = extractRange(source, "_chatTextHasInternalMarker", "_openChatFullscreen");
         const existingNode = { stable: true };
         const el: any = {
             scrollHeight: 200,

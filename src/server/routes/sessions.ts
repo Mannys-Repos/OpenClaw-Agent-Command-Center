@@ -82,6 +82,20 @@ const INTERNAL_SESSION_MARKERS = [
     "HEARTBEAT_OK",
 ];
 
+function _sessionMessageLineIsInternalLog(line: string): boolean {
+    const text = line.trim();
+    return /^\[plugins?\](?:\s|$)/i.test(text)
+        || /^\[agent-dashboard\](?:\s|$)/i.test(text)
+        || /^plugin registered(?:\s|$)/i.test(text)
+        || /^loading\b.*\bplugin\b/i.test(text)
+        || /^memory-lancedb:\s*plugin registered\b/i.test(text);
+}
+
+function _sessionMessageIsOnlyInternalLogs(text: string): boolean {
+    const lines = text.split(/\r?\n/).map((line) => line.trim()).filter(Boolean);
+    return lines.length > 0 && lines.every(_sessionMessageLineIsInternalLog);
+}
+
 function _sessionMessageText(msg: any): string {
     const content = msg?.content ?? msg?.text ?? "";
     if (Array.isArray(content)) {
@@ -104,7 +118,7 @@ function _sessionMessageIsInternal(msg: any): boolean {
     const role = typeof msg.role === "string" ? msg.role : "";
     if (role === "system" || role === "tool" || role === "toolResult") return true;
     const text = _sessionMessageText(msg);
-    return INTERNAL_SESSION_MARKERS.some((marker) => text.includes(marker));
+    return INTERNAL_SESSION_MARKERS.some((marker) => text.includes(marker)) || _sessionMessageIsOnlyInternalLogs(text);
 }
 
 function _cloneSessionMessage(msg: any, seq: number): any {
