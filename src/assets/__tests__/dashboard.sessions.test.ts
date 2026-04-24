@@ -617,6 +617,138 @@ describe("dashboard sessions rework", () => {
         expect((el.innerHTML.match(/chat-bubble/g) || []).length).toBe(1);
     });
 
+    it("preserves visible text from backend-classified internal assistant arrays", () => {
+        const source = readFileSync(DASHBOARD_JS_PATH, "utf-8");
+        const block = extractRange(source, "_chatTextHasInternalMarker", "closeChatView");
+
+        const el: any = {
+            innerHTML: "",
+            scrollHeight: 200,
+            scrollTop: 0,
+            clientHeight: 150,
+        };
+        const ctx: any = {
+            _chatHideInternal: true,
+            _chatLastMsgs: null,
+            Q: (id: string) => (id === "chat-msgs" ? el : null),
+            fmtTime: (value: string) => value,
+            esc: (value: unknown) => String(value ?? ""),
+        };
+
+        vm.runInNewContext(block, ctx);
+        ctx._renderChatMessages([
+            {
+                role: "assistant",
+                internal: true,
+                isInternal: true,
+                content: [
+                    { type: "thinking", thinking: "Read HEARTBEAT.md and reply HEARTBEAT_OK unless needed" },
+                    { type: "text", text: "Hi! 👋" },
+                ],
+            },
+        ], false);
+
+        expect(el.innerHTML).not.toContain("HEARTBEAT");
+        expect(el.innerHTML).not.toContain("thinking");
+        expect(el.innerHTML).not.toContain("chat-internal");
+        expect(el.innerHTML).toContain("Hi! 👋");
+    });
+
+    it("hides backend-classified internal user heartbeat messages", () => {
+        const source = readFileSync(DASHBOARD_JS_PATH, "utf-8");
+        const block = extractRange(source, "_chatTextHasInternalMarker", "closeChatView");
+
+        const el: any = {
+            innerHTML: "",
+            scrollHeight: 200,
+            scrollTop: 0,
+            clientHeight: 150,
+        };
+        const ctx: any = {
+            _chatHideInternal: true,
+            _chatLastMsgs: null,
+            Q: (id: string) => (id === "chat-msgs" ? el : null),
+            fmtTime: (value: string) => value,
+            esc: (value: unknown) => String(value ?? ""),
+        };
+
+        vm.runInNewContext(block, ctx);
+        ctx._renderChatMessages([
+            { role: "user", internal: true, isInternal: true, content: [{ type: "text", text: "Read HEARTBEAT.md if it exists" }] },
+            { role: "user", content: "say hi" },
+            { role: "assistant", internal: true, isInternal: true, content: [{ type: "thinking", thinking: "Read HEARTBEAT.md" }, { type: "text", text: "Hi! 👋" }] },
+        ], false);
+
+        expect(el.innerHTML).not.toContain("Read HEARTBEAT.md");
+        expect(el.innerHTML).toContain("say hi");
+        expect(el.innerHTML).toContain("Hi! 👋");
+        expect(el.innerHTML).not.toContain("chat-internal");
+    });
+
+    it("does not replace pending chat with internal-only POST output", () => {
+        const source = readFileSync(DASHBOARD_JS_PATH, "utf-8");
+        const block = extractRange(source, "_chatTextHasInternalMarker", "closeChatView");
+        const pending: any = {
+            removedId: false,
+            bubble: { textContent: "Thinking…" },
+            removeAttribute(name: string) {
+                if (name === "id") this.removedId = true;
+            },
+            querySelector(selector: string) {
+                return selector === ".chat-bubble" ? this.bubble : null;
+            },
+            classList: { add: vi.fn() },
+        };
+        const ctx: any = {
+            _chatHideInternal: true,
+            _chatLastMsgs: [{ role: "user", content: "hi" }],
+            _chatLastMsgCount: 1,
+            Q: (id: string) => (id === "chat-pending" ? pending : null),
+            fmtTime: (value: string) => value,
+            esc: (value: unknown) => String(value ?? ""),
+        };
+
+        vm.runInNewContext(block, ctx);
+        const replaced = ctx._replacePendingWithAssistantMessage("[plugins] [agent-dashboard] Loading Agent Dashboard plugin...\nHEARTBEAT_OK");
+
+        expect(replaced).toBe(false);
+        expect(pending.removedId).toBe(false);
+        expect(pending.bubble.textContent).toBe("Thinking…");
+        expect(ctx._chatLastMsgs).toHaveLength(1);
+    });
+
+    it("sanitizes immediate POST output before replacing pending chat", () => {
+        const source = readFileSync(DASHBOARD_JS_PATH, "utf-8");
+        const block = extractRange(source, "_chatTextHasInternalMarker", "closeChatView");
+        const pending: any = {
+            removedId: false,
+            bubble: { textContent: "Thinking…" },
+            removeAttribute(name: string) {
+                if (name === "id") this.removedId = true;
+            },
+            querySelector(selector: string) {
+                return selector === ".chat-bubble" ? this.bubble : null;
+            },
+            classList: { add: vi.fn() },
+        };
+        const ctx: any = {
+            _chatHideInternal: true,
+            _chatLastMsgs: [{ role: "user", content: "hi" }],
+            _chatLastMsgCount: 1,
+            Q: (id: string) => (id === "chat-pending" ? pending : null),
+            fmtTime: (value: string) => value,
+            esc: (value: unknown) => String(value ?? ""),
+        };
+
+        vm.runInNewContext(block, ctx);
+        const replaced = ctx._replacePendingWithAssistantMessage("[plugins] [agent-dashboard] Loading Agent Dashboard plugin...\nHEARTBEAT_OK\nHi there!");
+
+        expect(replaced).toBe(true);
+        expect(pending.removedId).toBe(true);
+        expect(pending.bubble.textContent).toBe("Hi there!");
+        expect(ctx._chatLastMsgs.at(-1)).toEqual({ role: "assistant", content: "Hi there!" });
+    });
+
     it("uses cursor delta polling instead of count-only guards", () => {
         const source = readFileSync(DASHBOARD_JS_PATH, "utf-8");
         expect(source).toContain("?after=");
@@ -624,6 +756,7 @@ describe("dashboard sessions rework", () => {
 
         const refreshBlock = extractRange(source, "_refreshChatMessages", "renderSubagents");
         expect(refreshBlock).not.toContain("newCount<=_chatLastMsgCount");
+        expect(refreshBlock).not.toContain('if(Q("chat-pending"))return');
         expect(refreshBlock).toContain("_chatThreadState.lastSeq");
         expect(refreshBlock).toContain("_appendChatMessages(msgs)");
     });
@@ -663,6 +796,75 @@ describe("dashboard sessions rework", () => {
         expect(el.inserted).toContain("New answer");
         expect(el.inserted).not.toContain("Already here");
         expect(el.scrollTop).toBe(200);
+        expect(ctx._chatLastMsgCount).toBe(2);
+    });
+
+    it("keeps legitimate repeated canonical chat messages", () => {
+        const source = readFileSync(DASHBOARD_JS_PATH, "utf-8");
+        const block = extractRange(source, "_chatTextHasInternalMarker", "_openChatFullscreen");
+        const el: any = {
+            scrollHeight: 200,
+            scrollTop: 140,
+            clientHeight: 80,
+            inserted: "",
+            children: [],
+            querySelector: () => null,
+            insertAdjacentHTML(_where: string, html: string) {
+                this.inserted += html;
+            },
+        };
+        const ctx: any = {
+            _chatHideInternal: true,
+            _chatLastMsgs: [{ role: "assistant", content: "Hi there!", seq: 1 }],
+            _chatLastMsgCount: 1,
+            Q: (id: string) => (id === "chat-msgs" ? el : null),
+            fmtTime: (value: string) => value,
+            esc: (value: unknown) => String(value ?? ""),
+        };
+
+        vm.runInNewContext(block, ctx);
+        const appended = ctx._appendChatMessages([
+            { role: "assistant", content: "Hi there!", seq: 2 },
+            { role: "assistant", content: "Hi there!", seq: 3 },
+        ]);
+
+        expect(appended).toBe(2);
+        expect((el.inserted.match(/Hi there!/g) || []).length).toBe(2);
+        expect(ctx._chatLastMsgCount).toBe(3);
+    });
+
+    it("uses canonical seq to skip already rendered chat messages", () => {
+        const source = readFileSync(DASHBOARD_JS_PATH, "utf-8");
+        const block = extractRange(source, "_chatTextHasInternalMarker", "_openChatFullscreen");
+        const el: any = {
+            scrollHeight: 200,
+            scrollTop: 140,
+            clientHeight: 80,
+            inserted: "",
+            children: [],
+            querySelector: () => null,
+            insertAdjacentHTML(_where: string, html: string) {
+                this.inserted += html;
+            },
+        };
+        const ctx: any = {
+            _chatHideInternal: true,
+            _chatLastMsgs: [{ role: "assistant", content: "Hi there!", seq: 1 }],
+            _chatLastMsgCount: 1,
+            Q: (id: string) => (id === "chat-msgs" ? el : null),
+            fmtTime: (value: string) => value,
+            esc: (value: unknown) => String(value ?? ""),
+        };
+
+        vm.runInNewContext(block, ctx);
+        const appended = ctx._appendChatMessages([
+            { role: "assistant", content: "Hi there!", seq: 1 },
+            { role: "assistant", content: "Fresh reply", seq: 2 },
+        ]);
+
+        expect(appended).toBe(1);
+        expect(el.inserted).not.toContain("Hi there!");
+        expect(el.inserted).toContain("Fresh reply");
         expect(ctx._chatLastMsgCount).toBe(2);
     });
 

@@ -127,6 +127,15 @@ describe("Property 2: Preservation — Normal Session Operations Unchanged", () 
                 { numRuns: 10 },
             );
         });
+
+        it("POST /sessions/{key}/message adds non-heartbeat guidance without rewriting user text", () => {
+            const src = loadSessionsTs();
+
+            expect(src).toContain("DASHBOARD_CHAT_SYSTEM_MESSAGE");
+            expect(src).toContain("not a heartbeat poll or scheduled heartbeat cycle");
+            expect(src).toContain('{ role: "system", content: DASHBOARD_CHAT_SYSTEM_MESSAGE }, { role: "user", content: message }');
+            expect(src).toContain("callGatewayChat(agentId, userMessage, sessionKey, config)");
+        });
     });
 
     /**

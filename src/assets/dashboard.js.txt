@@ -3258,11 +3258,11 @@ function _chatMessageParts(m){
   var role=m.role||"system";
   var content=m.content||m.text||"";
   var isInternal=!!(m&& (m.internal===true||m.isInternal===true));
-  if(isInternal&&_chatHideInternal)return null;
   if(role==="system"||role==="toolResult"||role==="tool"){
     if(_chatHideInternal)return null;
     isInternal=true;
   }
+  if(isInternal&&_chatHideInternal&&role!=="assistant")return null;
   if(Array.isArray(content)){
     var textParts=[];
     var thinkingParts=[];
@@ -3291,6 +3291,7 @@ function _chatMessageParts(m){
       var strippedTextContent=_stripChatInternalLogLines(textContent);
       if(isInternal&&!strippedTextContent)return null;
       content=strippedTextContent;
+      if(isInternal) isInternal=false;
     }else{
       var parts=[];
       if(thinkingParts.length>0)parts.push("[thinking] "+thinkingParts.join("\n"));
@@ -3303,7 +3304,12 @@ function _chatMessageParts(m){
     if(!isInternal&&_chatTextHasInternalMarker(content)){
       isInternal=true;
     }
-    if(_chatHideInternal)content=_stripChatInternalLogLines(content);
+    if(_chatHideInternal){
+      var originalContent=content;
+      content=_stripChatInternalLogLines(content);
+      if(isInternal&&content===originalContent)return null;
+      if(isInternal) isInternal=false;
+    }
     else if(!isInternal&&_stripChatInternalLogLines(content)!==content)isInternal=true;
   }
   if(!content||!content.trim())return null;
@@ -3320,6 +3326,11 @@ function _chatMessageFingerprint(m){
   if(!parts)return "";
   return parts.role+"\u0000"+parts.content;
 }
+function _chatMessageSeqKey(m){
+  if(!m)return "";
+  var seq=m.seq||m.sequence||m.index;
+  return seq===undefined||seq===null?"":String(seq);
+}
 function _chatMessageHtml(m,extraClass){
   var parts=_chatMessageParts(m);
   if(!parts)return "";
@@ -3330,6 +3341,19 @@ function _chatMessageHtml(m,extraClass){
     +'<div class="chat-role-label">'+esc(label)+(ts?' <span class="chat-ts">'+esc(ts)+'</span>':'')+'</div>'
     +'<div class="chat-bubble">'+esc(parts.content)+'</div></div>';
 }
+function _replacePendingWithAssistantMessage(raw){
+  var p=Q("chat-pending");
+  if(!p)return false;
+  var parts=_chatMessageParts({role:"assistant",content:raw});
+  if(!parts)return false;
+  p.removeAttribute("id");
+  if(parts.isInternal&&!_chatHideInternal)p.classList.add("chat-internal");
+  var bubble=p.querySelector(".chat-bubble");
+  if(bubble)bubble.textContent=parts.content;
+  _chatLastMsgs=(_chatLastMsgs||[]).concat([{role:"assistant",content:parts.content}]);
+  _chatLastMsgCount=_chatLastMsgs.length;
+  return true;
+}
 function _removeChatEmptyState(el){
   if(!el)return;
   var empty=el.querySelector(".session-empty-state");
@@ -3338,23 +3362,33 @@ function _removeChatEmptyState(el){
 function _appendChatMessages(msgs){
   var el=Q("chat-msgs");if(!el||!msgs||msgs.length===0)return 0;
   var wasNearBottom=el.scrollHeight-el.scrollTop-el.clientHeight<80;
-  var existingFingerprints={};
+  var existingSeqs={};
+  var optimisticFingerprints={};
   (_chatLastMsgs||[]).forEach(function(m){
+    var seq=_chatMessageSeqKey(m);
+    if(seq){existingSeqs[seq]=true;return;}
     var fp=_chatMessageFingerprint(m);
-    if(fp)existingFingerprints[fp]=true;
+    if(fp)optimisticFingerprints[fp]=(optimisticFingerprints[fp]||0)+1;
   });
   var appended=[];
   var html="";
   msgs.forEach(function(m){
+    var seq=_chatMessageSeqKey(m);
+    if(seq&&existingSeqs[seq])return;
     var fp=_chatMessageFingerprint(m);
-    if(fp&&existingFingerprints[fp])return;
+    if(fp&&optimisticFingerprints[fp]>0){
+      optimisticFingerprints[fp]-=1;
+      return;
+    }
     var itemHtml=_chatMessageHtml(m,"is-new");
     if(!itemHtml)return;
-    if(fp)existingFingerprints[fp]=true;
+    if(seq)existingSeqs[seq]=true;
     appended.push(m);
     html+=itemHtml;
   });
   if(!html)return 0;
+  var pending=Q("chat-pending");
+  if(pending&&appended.some(function(m){return (m.role||"")==="assistant";}))pending.remove();
   _removeChatEmptyState(el);
   el.insertAdjacentHTML("beforeend",html);
   if(wasNearBottom)el.scrollTop=el.scrollHeight;
@@ -3536,6 +3570,8 @@ function sendMsg(key){
   userDiv.className="chat-msg user is-new";
   userDiv.innerHTML='<div class="chat-role-label">you</div><div class="chat-bubble">'+esc(msg)+'</div>';
   el.appendChild(userDiv);
+  _chatLastMsgs=(_chatLastMsgs||[]).concat([{role:"user",content:msg}]);
+  _chatLastMsgCount=_chatLastMsgs.length;
 
   // Append "Thinking…" indicator
   var pendDiv=document.createElement("div");
@@ -3547,15 +3583,12 @@ function sendMsg(key){
 
   api("sessions/"+encodeURIComponent(key)+"/message",{method:"POST",body:JSON.stringify({message:msg,agentId:agentId})})
     .then(function(d){
-      // Replace "Thinking…" with the actual response
-      var p=Q("chat-pending");
-      if(p){
-        var txt=(d&&d.result)?d.result:(d&&d.response)?d.response:"Message sent.";
-        p.removeAttribute("id");
-        p.querySelector(".chat-bubble").textContent=txt;
+      var raw=(d&&d.result)?d.result:(d&&d.response)?d.response:"";
+      if(raw&&!_replacePendingWithAssistantMessage(raw)){
+        var p=Q("chat-pending");
+        var bubble=p?p.querySelector(".chat-bubble"):null;
+        if(bubble)bubble.innerHTML='<span class="spin"></span> Waiting for response…';
       }
-      _chatLastMsgs=(_chatLastMsgs||[]).concat([{role:"user",content:msg},{role:"assistant",content:(d&&d.result)?d.result:(d&&d.response)?d.response:"Message sent."}]);
-      _chatLastMsgCount=_chatLastMsgs.length;
       inp.disabled=false;
       inp.focus();
       el.scrollTop=el.scrollHeight;
@@ -3599,8 +3632,6 @@ function sendMsg(key){
 }
 
 async function _refreshChatMessages(key){
-  // Skip if a message send is in-flight (Thinking… indicator visible)
-  if(Q("chat-pending"))return;
   try{
     var cursor=_chatThreadState.lastSeq||0;
     var q=cursor>0?("?after="+encodeURIComponent(String(cursor))+"&limit="+(_chatThreadState.pageLimit||100)):("?limit="+(_chatThreadState.pageLimit||100));

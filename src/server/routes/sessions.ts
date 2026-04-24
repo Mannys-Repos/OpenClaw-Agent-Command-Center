@@ -96,6 +96,8 @@ function _sessionMessageIsOnlyInternalLogs(text: string): boolean {
     return lines.length > 0 && lines.every(_sessionMessageLineIsInternalLog);
 }
 
+const DASHBOARD_CHAT_SYSTEM_MESSAGE = "This is an interactive dashboard chat message from the user, not a heartbeat poll or scheduled heartbeat cycle. Answer the user's message normally. Do not reply HEARTBEAT_OK unless the user explicitly asks for a heartbeat status check.";
+
 function _sessionMessageText(msg: any): string {
     const content = msg?.content ?? msg?.text ?? "";
     if (Array.isArray(content)) {
@@ -242,7 +244,7 @@ function callGatewayChat(agentId: string, message: string, sessionKey: string, c
     return new Promise((resolve, reject) => {
         const postData = JSON.stringify({
             model: agentId || "default",
-            messages: [{ role: "user", content: message }],
+            messages: [{ role: "system", content: DASHBOARD_CHAT_SYSTEM_MESSAGE }, { role: "user", content: message }],
             stream: false,
             session_id: sessionKey,
         });
