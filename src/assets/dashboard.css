@@ -341,7 +341,7 @@ body {
   left: 0;
   right: 0;
   height: 3px;
-  z-index: 999;
+  z-index: 190;
   background: transparent;
   pointer-events: none;
   overflow: hidden
@@ -628,7 +628,7 @@ body {
 
 /* Agent list sidebar */
 .agent-list {
-  width: 292px;
+  width: 304px;
   flex-shrink: 0;
   background: var(--bg1);
   border-left: 1px solid var(--border);
@@ -639,7 +639,7 @@ body {
 }
 
 .agent-list-head {
-  padding: 14px 18px 12px;
+  padding: 16px 20px 13px;
   font-size: var(--type-label);
   color: var(--tx3);
   text-transform: uppercase;
@@ -673,49 +673,81 @@ body {
 .agent-list-body {
   flex: 1;
   overflow-y: auto;
-  padding: 13px 10px 18px
+  padding: 12px 12px 18px
 }
 
 .agent-list-item {
-  display: flex;
+  position: relative;
+  display: grid;
+  grid-template-columns: 34px minmax(0, 1fr) 12px;
   align-items: center;
   gap: 12px;
-  padding: 11px 12px;
+  padding: 12px 12px;
   cursor: pointer;
   border: 1px solid transparent;
-  border-left: 2px solid transparent;
-  border-radius: 10px;
-  margin-bottom: 5px;
+  border-left: 3px solid transparent;
+  border-radius: 13px;
+  margin-bottom: 7px;
   background: transparent;
-  transition: background .14s ease, border-color .14s ease, box-shadow .14s ease
+  min-height: 74px;
+  transition: background .14s ease, border-color .14s ease, box-shadow .14s ease, transform .14s ease
+}
+
+.agent-list-item:not(:last-child)::after {
+  content: "";
+  position: absolute;
+  left: 12px;
+  right: 12px;
+  bottom: -5px;
+  height: 1px;
+  background: linear-gradient(90deg, transparent, color-mix(in srgb, var(--border) 72%, transparent), transparent);
+  opacity: .72;
+  pointer-events: none
+}
+
+.agent-list-item:hover::after,
+.agent-list-item.active::after {
+  opacity: 0
 }
 
 .agent-list-item:hover {
-  background: color-mix(in srgb, var(--bg2) 95%, white 5%);
-  border-color: color-mix(in srgb, var(--border) 90%, transparent);
-  box-shadow: inset 0 1px 0 color-mix(in srgb, white 2%, transparent)
+  background: color-mix(in srgb, var(--bg2) 90%, white 10%);
+  border-color: color-mix(in srgb, var(--border) 88%, var(--accent) 12%);
+  box-shadow: inset 0 1px 0 color-mix(in srgb, white 4%, transparent), 0 10px 24px rgba(0, 0, 0, .12);
+  transform: translateY(-1px)
 }
 
 .agent-list-item.active {
-  background: color-mix(in srgb, var(--accentbg) 13%, var(--bg2) 87%);
-  border-color: color-mix(in srgb, var(--accent) 22%, var(--border) 78%);
-  border-left-color: color-mix(in srgb, var(--accent) 72%, transparent);
-  box-shadow: inset 0 1px 0 color-mix(in srgb, white 4%, transparent), inset 1px 0 0 color-mix(in srgb, var(--accent) 12%, transparent)
+  background: linear-gradient(135deg, color-mix(in srgb, var(--accentbg) 22%, var(--bg2) 78%), color-mix(in srgb, var(--bg2) 88%, white 12%));
+  border-color: color-mix(in srgb, var(--accent) 38%, var(--border) 62%);
+  border-left-color: color-mix(in srgb, var(--accent) 82%, white 18%);
+  box-shadow: inset 0 1px 0 color-mix(in srgb, white 6%, transparent), 0 14px 32px rgba(0, 0, 0, .18), 0 0 0 1px color-mix(in srgb, var(--accent) 10%, transparent)
+}
+
+.agent-list-item.active:hover {
+  transform: none
 }
 
 .agent-list-icon {
-  font-size: 17px;
+  font-size: 18px;
   flex-shrink: 0;
-  width: 30px;
-  height: 30px;
-  border-radius: 8px;
+  width: 34px;
+  height: 34px;
+  border-radius: 10px;
   display: inline-flex;
   align-items: center;
   justify-content: center;
   text-align: center;
   color: color-mix(in srgb, var(--tx2) 88%, var(--tx1) 12%);
-  background: color-mix(in srgb, var(--bg2) 68%, transparent);
-  box-shadow: inset 0 1px 0 color-mix(in srgb, white 3%, transparent)
+  background: color-mix(in srgb, var(--bg2) 76%, white 4%);
+  border: 1px solid color-mix(in srgb, var(--border) 70%, transparent);
+  box-shadow: inset 0 1px 0 color-mix(in srgb, white 5%, transparent)
+}
+
+.agent-list-item.active .agent-list-icon {
+  color: var(--tx1);
+  background: color-mix(in srgb, var(--accentbg) 24%, var(--bg2) 76%);
+  border-color: color-mix(in srgb, var(--accent) 26%, var(--border) 74%)
 }
 
 .agent-list-info {
@@ -723,26 +755,26 @@ body {
   min-width: 0;
   display: flex;
   flex-direction: column;
-  gap: 4px;
-  padding-right: 6px
+  gap: 5px;
+  padding-right: 0
 }
 
 .agent-list-title-row {
   display: flex;
   align-items: center;
-  gap: 6px;
+  gap: 8px;
   min-width: 0
 }
 
 .agent-list-name {
-  font-size: var(--type-body);
-  font-weight: 650;
+  font-size: var(--fs-base);
+  font-weight: 700;
   color: var(--tx1);
   flex: 1;
   min-width: 0;
   white-space: normal;
   overflow-wrap: anywhere;
-  line-height: 1.3;
+  line-height: 1.2;
   letter-spacing: -.012em;
   display: -webkit-box;
   -webkit-line-clamp: 2;
@@ -752,15 +784,16 @@ body {
 
 .agent-list-badge {
   flex-shrink: 0;
-  align-self: flex-start;
-  padding: 0;
-  border: 0;
-  background: transparent;
-  color: color-mix(in srgb, var(--tx3) 90%, var(--accent) 10%);
-  font-size: 9px;
-  font-weight: 600;
-  line-height: 1.15;
-  letter-spacing: .12em;
+  align-self: center;
+  padding: 2px 6px;
+  border: 1px solid color-mix(in srgb, var(--accent) 22%, var(--border) 78%);
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--accentbg) 18%, transparent);
+  color: color-mix(in srgb, var(--tx2) 74%, var(--accent) 26%);
+  font-size: 8px;
+  font-weight: 750;
+  line-height: 1.1;
+  letter-spacing: .11em;
   text-transform: uppercase
 }
 
@@ -768,10 +801,10 @@ body {
   display: flex;
   flex-direction: column;
   align-items: flex-start;
-  gap: 2px;
+  gap: 3px;
   min-width: 0;
-  font-size: var(--type-meta);
-  line-height: 1.3
+  font-size: var(--fs-sm);
+  line-height: 1.2
 }
 
 .agent-list-meta-model,
@@ -784,12 +817,13 @@ body {
 
 .agent-list-meta-model {
   color: color-mix(in srgb, var(--tx3) 92%, var(--tx2) 8%);
-  letter-spacing: -.01em
+  letter-spacing: -.01em;
+  font-weight: 500
 }
 
 .agent-list-meta-bindings {
-  color: color-mix(in srgb, var(--green) 78%, var(--tx2) 22%);
-  font-weight: 600;
+  color: color-mix(in srgb, var(--green) 84%, var(--tx1) 16%);
+  font-weight: 700;
   letter-spacing: -.005em
 }
 
@@ -798,10 +832,10 @@ body {
   height: 8px;
   border-radius: 50%;
   flex-shrink: 0;
-  align-self: flex-start;
-  margin-top: 11px;
-  margin-left: 10px;
-  box-shadow: 0 0 0 3px color-mix(in srgb, var(--bg1) 96%, transparent);
+  align-self: start;
+  justify-self: end;
+  margin-top: 4px;
+  box-shadow: 0 0 0 4px color-mix(in srgb, var(--bg1) 94%, transparent);
   opacity: .9
 }
 
@@ -2955,6 +2989,10 @@ label {
     border-top: 1px solid var(--border)
   }
 
+  .agent-list-body {
+    padding: 12px 12px 18px
+  }
+
   .graph-toggle {
     display: inline-block
   }
@@ -3405,20 +3443,21 @@ label {
   }
 
   .agent-list-item {
-    padding: 10px 11px;
+    grid-template-columns: 32px minmax(0, 1fr) 12px;
+    padding: 12px 11px;
     gap: 10px;
-    border-radius: 10px
+    border-radius: 12px;
+    min-height: 70px
   }
 
   .agent-list-icon {
     font-size: 17px;
-    width: 28px;
-    height: 28px
+    width: 32px;
+    height: 32px
   }
 
   .agent-list-dot {
-    margin-top: 10px;
-    margin-left: 8px
+    margin-top: 4px
   }
 
   .agent-list-name {
@@ -3513,8 +3552,8 @@ label {
 
   .chat-input-bar {
     padding: 10px;
-    flex-direction: column;
-    align-items: stretch;
+    flex-direction: row;
+    align-items: center;
     gap: 10px
   }
 
@@ -3529,7 +3568,7 @@ label {
   }
 
   .chat-send-btn {
-    width: 100%;
+    width: auto;
     padding: 10px 16px
   }
 
@@ -7075,6 +7114,11 @@ code {
   .chat-head-actions .btn,
   .session-card-actions .btn {
     width: 100%
+  }
+
+  .fs-editor-overlay.chat-fs .chat-head-actions .btn {
+    flex: 0 0 auto;
+    width: auto
   }
 
   .session-subagent-actions {
